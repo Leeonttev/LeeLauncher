@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-kill"
+description = "Enables the instance_kill command without any pre-configured scope."
+commands.allow = ["instance_kill"]
+
+[[permission]]
+identifier = "deny-instance-kill"
+description = "Denies the instance_kill command without any pre-configured scope."
+commands.deny = ["instance_kill"]

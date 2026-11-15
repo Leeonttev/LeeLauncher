@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-catalog-resolve"
+description = "Enables the catalog_resolve command without any pre-configured scope."
+commands.allow = ["catalog_resolve"]
+
+[[permission]]
+identifier = "deny-catalog-resolve"
+description = "Denies the catalog_resolve command without any pre-configured scope."
+commands.deny = ["catalog_resolve"]

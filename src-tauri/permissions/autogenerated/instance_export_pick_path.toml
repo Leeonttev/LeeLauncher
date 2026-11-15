@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-export-pick-path"
+description = "Enables the instance_export_pick_path command without any pre-configured scope."
+commands.allow = ["instance_export_pick_path"]
+
+[[permission]]
+identifier = "deny-instance-export-pick-path"
+description = "Denies the instance_export_pick_path command without any pre-configured scope."
+commands.deny = ["instance_export_pick_path"]

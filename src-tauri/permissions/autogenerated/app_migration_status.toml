@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-migration-status"
+description = "Enables the app_migration_status command without any pre-configured scope."
+commands.allow = ["app_migration_status"]
+
+[[permission]]
+identifier = "deny-app-migration-status"
+description = "Denies the app_migration_status command without any pre-configured scope."
+commands.deny = ["app_migration_status"]

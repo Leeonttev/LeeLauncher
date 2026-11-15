@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-skin-worn-clear"
+description = "Enables the skin_worn_clear command without any pre-configured scope."
+commands.allow = ["skin_worn_clear"]
+
+[[permission]]
+identifier = "deny-skin-worn-clear"
+description = "Denies the skin_worn_clear command without any pre-configured scope."
+commands.deny = ["skin_worn_clear"]

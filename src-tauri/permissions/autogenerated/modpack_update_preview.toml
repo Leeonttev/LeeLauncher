@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-modpack-update-preview"
+description = "Enables the modpack_update_preview command without any pre-configured scope."
+commands.allow = ["modpack_update_preview"]
+
+[[permission]]
+identifier = "deny-modpack-update-preview"
+description = "Denies the modpack_update_preview command without any pre-configured scope."
+commands.deny = ["modpack_update_preview"]

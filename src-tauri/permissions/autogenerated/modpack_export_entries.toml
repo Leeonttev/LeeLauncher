@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-modpack-export-entries"
+description = "Enables the modpack_export_entries command without any pre-configured scope."
+commands.allow = ["modpack_export_entries"]
+
+[[permission]]
+identifier = "deny-modpack-export-entries"
+description = "Denies the modpack_export_entries command without any pre-configured scope."
+commands.deny = ["modpack_export_entries"]

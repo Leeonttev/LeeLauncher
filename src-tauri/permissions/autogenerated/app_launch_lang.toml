@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-launch-lang"
+description = "Enables the app_launch_lang command without any pre-configured scope."
+commands.allow = ["app_launch_lang"]
+
+[[permission]]
+identifier = "deny-app-launch-lang"
+description = "Denies the app_launch_lang command without any pre-configured scope."
+commands.deny = ["app_launch_lang"]

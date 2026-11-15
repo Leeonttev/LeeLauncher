@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-skins-library"
+description = "Enables the skins_library command without any pre-configured scope."
+commands.allow = ["skins_library"]
+
+[[permission]]
+identifier = "deny-skins-library"
+description = "Denies the skins_library command without any pre-configured scope."
+commands.deny = ["skins_library"]

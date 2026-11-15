@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-logs-read"
+description = "Enables the instance_logs_read command without any pre-configured scope."
+commands.allow = ["instance_logs_read"]
+
+[[permission]]
+identifier = "deny-instance-logs-read"
+description = "Denies the instance_logs_read command without any pre-configured scope."
+commands.deny = ["instance_logs_read"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-java-list"
+description = "Enables the java_list command without any pre-configured scope."
+commands.allow = ["java_list"]
+
+[[permission]]
+identifier = "deny-java-list"
+description = "Denies the java_list command without any pre-configured scope."
+commands.deny = ["java_list"]

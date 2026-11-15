@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-modpack-download-pending"
+description = "Enables the modpack_download_pending command without any pre-configured scope."
+commands.allow = ["modpack_download_pending"]
+
+[[permission]]
+identifier = "deny-modpack-download-pending"
+description = "Denies the modpack_download_pending command without any pre-configured scope."
+commands.deny = ["modpack_download_pending"]

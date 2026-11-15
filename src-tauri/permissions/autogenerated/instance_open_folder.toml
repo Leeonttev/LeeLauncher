@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-open-folder"
+description = "Enables the instance_open_folder command without any pre-configured scope."
+commands.allow = ["instance_open_folder"]
+
+[[permission]]
+identifier = "deny-instance-open-folder"
+description = "Denies the instance_open_folder command without any pre-configured scope."
+commands.deny = ["instance_open_folder"]

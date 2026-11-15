@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-minecraft-versions"
+description = "Enables the minecraft_versions command without any pre-configured scope."
+commands.allow = ["minecraft_versions"]
+
+[[permission]]
+identifier = "deny-minecraft-versions"
+description = "Denies the minecraft_versions command without any pre-configured scope."
+commands.deny = ["minecraft_versions"]

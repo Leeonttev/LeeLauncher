@@ -1,0 +1,118 @@
+# Выпуск версии: тег `vX.Y.Z` (совпадает с `version` в src-tauri/Cargo.toml) → сборка лаунчера,
+# свой установщик с лаунчером внутри, подпись minisign и черновик релиза с установщиком, `.sig`
+# и `latest.json`.
+# Лаунчеры видят версию только после того, как черновик опубликуют вручную.
+name: Release
+
+on:
+    push:
+        tags: ["v*"]
+
+permissions:
+    contents: write
+
+concurrency:
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    windows:
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+            - name: Версия в Cargo.toml совпадает с тегом
+              shell: bash
+              run: |
+                  version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)
+                  if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+                    echo "::error::Тег $GITHUB_REF_NAME, а в src-tauri/Cargo.toml версия $version"
+                    exit 1
+                  fi
+
+            # Текст «Что нового» — раздел `## X.Y.Z` из CHANGELOG.md. Он попадает в релиз и в
+            # `notes` файла latest.json, то есть на экран обновления. Нет раздела — нет релиза.
+            - name: Что нового из CHANGELOG.md
+              shell: bash
+              run: |
+                  version="${GITHUB_REF_NAME#v}"
+                  awk -v head="## $version" '
+                    $0 == head { found = 1; next }
+                    found && /^## / { exit }
+                    found { print }
+                  ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+                  if ! grep -q '[^[:space:]]' notes.md; then
+                    echo "::error::В CHANGELOG.md нет раздела «## $version» или он пустой"
+                    exit 1
+                  fi
+
+            - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+              with:
+                  version: 12.11.2
+
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+              with:
+                  node-version: 24
+                  cache: pnpm
+
+            - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+            - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+              with:
+                  workspaces: |
+                      ./src-tauri -> target
+                      ./installer -> target
+
+            - run: pnpm install --frozen-lockfile
+
+            # Лаунчер. Установщик NSIS Tauri собирается заодно, но в релиз не идёт.
+            - name: Сборка лаунчера
+              env:
+                  # Вшивается в бинарник (`option_env!`); без него CurseForge в сборке выключен.
+                  LEELAUNCHER_CURSEFORGE_KEY: ${{ secrets.LEELAUNCHER_CURSEFORGE_KEY }}
+              run: pnpm tauri build
+
+            - name: Загрузчик WebView2 от Microsoft
+              shell: pwsh
+              run: |
+                  Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile MicrosoftEdgeWebview2Setup.exe
+                  # Внутрь установщика попадает только файл с действующей подписью Microsoft.
+                  $sig = Get-AuthenticodeSignature MicrosoftEdgeWebview2Setup.exe
+                  if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
+                    Write-Error "Подпись загрузчика WebView2 не прошла проверку: $($sig.Status) $($sig.SignerCertificate.Subject)"
+                    exit 1
+                  }
+
+            # Свой установщик, лаунчер и загрузчик WebView2 внутри.
+            - name: Сборка установщика
+              shell: bash
+              env:
+                  LEELAUNCHER_PAYLOAD: ${{ github.workspace }}/src-tauri/target/release/LeeLauncher.exe
+                  LEELAUNCHER_WEBVIEW2: ${{ github.workspace }}/MicrosoftEdgeWebview2Setup.exe
+              run: |
+                  cargo build --release --manifest-path installer/Cargo.toml
+                  mkdir -p out
+                  cp installer/target/release/LeeLauncher-Setup.exe "out/LeeLauncher-Setup-${GITHUB_REF_NAME#v}.exe"
+
+            # Подпись minisign для автообновления (версия зашивается в подпись) и latest.json.
+            - name: Подпись и latest.json
+              shell: bash
+              env:
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+              run: |
+                  version="${GITHUB_REF_NAME#v}"
+                  setup="out/LeeLauncher-Setup-$version.exe"
+                  pnpm tauri signer sign --app-version "$version" "$setup"
+                  url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/LeeLauncher-Setup-$version.exe"
+                  node scripts/make-latest-json.mjs "$version" "$setup" notes.md "$url" out/latest.json
+
+            - name: Черновик релиза
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  version="${GITHUB_REF_NAME#v}"
+                  setup="out/LeeLauncher-Setup-$version.exe"
+                  gh release create "$GITHUB_REF_NAME" --draft --title "LeeLauncher $version" \
+                    --notes-file notes.md "$setup" "$setup.sig" out/latest.json

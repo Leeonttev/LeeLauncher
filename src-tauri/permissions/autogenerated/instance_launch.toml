@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-launch"
+description = "Enables the instance_launch command without any pre-configured scope."
+commands.allow = ["instance_launch"]
+
+[[permission]]
+identifier = "deny-instance-launch"
+description = "Denies the instance_launch command without any pre-configured scope."
+commands.deny = ["instance_launch"]

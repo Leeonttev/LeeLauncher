@@ -1,0 +1,428 @@
+@import "tailwindcss";
+@import "./styles/markdown.css";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/onest";
+@import "@fontsource-variable/jetbrains-mono";
+
+@source not "../docs";
+@source not "../src-tauri";
+@source not "../installer";
+@source not "../site";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+	--font-sans: "Onest Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+	--font-mono: "JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace;
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* Скругления целыми пикселями. Теней нет. */
+@theme {
+	--radius-xs: 4px;
+	--radius-sm: 6px;
+	--radius-md: 8px;
+	--radius-lg: 12px;
+	--radius-xl: 16px;
+	--radius-2xl: 22px;
+	--radius-3xl: 28px;
+	--radius-4xl: 32px;
+	--shadow-2xs: none;
+	--shadow-xs: none;
+	--shadow-sm: none;
+	--shadow-md: none;
+	--shadow-lg: none;
+	--shadow-xl: none;
+	--shadow-2xl: none;
+}
+
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover-border: var(--popover-border);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary-text: var(--primary-text);
+	--color-primary-soft: var(--primary-soft);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-warning: var(--warning);
+	--color-success: var(--success);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-control-track: var(--control-track);
+	--color-border-hover: var(--border-hover);
+	--color-field: var(--field);
+	--color-ring: var(--ring);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-titlebar-close: var(--titlebar-close);
+	--color-on-cover: var(--on-cover);
+	--color-cover-scrim: var(--cover-scrim);
+	--color-brand: var(--brand);
+	--color-brand-icon: var(--brand-icon);
+	--color-brand-tile: var(--brand-tile);
+	--color-brand-mark: var(--brand-mark);
+}
+
+/* Тёмная тема графитовая, не чёрная. Голубой в светлой теме темнее, чтобы держать контраст с белым. */
+:root,
+.light {
+	--background: #ffffff;
+	--foreground: #1d1d1f;
+	--card: #ffffff;
+	--card-foreground: #1d1d1f;
+	--popover: #ffffff;
+	--popover-foreground: #1d1d1f;
+	/* Теней нет: меню и поповеры на белом держатся на рамке. */
+	--popover-border: #d2d2d7;
+	--primary: #028ecc;
+	--primary-foreground: #1d1d1f;
+	--primary-text: #016799;
+	--secondary: #f5f5f7;
+	--secondary-foreground: #1d1d1f;
+	--muted: #f5f5f7;
+	--muted-foreground: #68686d;
+	--accent: #ececf0;
+	--accent-foreground: #1d1d1f;
+	--destructive: #c4261d;
+	--warning: #8a5806;
+	--success: #177534;
+	--border: #e8e8ed;
+	--input: #8e8e93;
+	/* Дорожка выключенного переключателя, ползунок прокрутки, рамка ручки ползунка. */
+	--control-track: #c7c7cc;
+	--control-track-hover: #8e8e93;
+	--field: #ffffff;
+	--sidebar: #f5f5f7;
+	--sidebar-foreground: #1d1d1f;
+	--sidebar-accent: #e8e8ed;
+	--sidebar-accent-foreground: #1d1d1f;
+	--titlebar-close: #c42b1c;
+	--soft-mix: 15%;
+	--brand: #028ecc;
+	color-scheme: light;
+}
+
+:root {
+	--duration-fast: 120ms;
+	--duration-base: 200ms;
+	--duration-slow: 320ms;
+}
+
+.dark {
+	--background: #18181b;
+	--foreground: #f5f5f7;
+	--card: #222225;
+	--card-foreground: #f5f5f7;
+	--popover: #29292d;
+	--popover-foreground: #f5f5f7;
+	--popover-border: #3e3e43;
+	--primary: #32ade6;
+	--primary-foreground: #1d1d1f;
+	--primary-text: #32ade6;
+	--secondary: #222225;
+	--secondary-foreground: #f5f5f7;
+	--muted: #222225;
+	--muted-foreground: #a1a1a6;
+	--accent: #313135;
+	--accent-foreground: #f5f5f7;
+	--destructive: #ff6b62;
+	--warning: #e0b04a;
+	--success: #3fb950;
+	--border: #323236;
+	--input: #737378;
+	--control-track: #5a5a5f;
+	--control-track-hover: #8e8e93;
+	--field: #131315;
+	--sidebar: #111113;
+	--sidebar-foreground: #f5f5f7;
+	--sidebar-accent: #28282c;
+	--sidebar-accent-foreground: #f5f5f7;
+	--titlebar-close: #c42b1c;
+	--soft-mix: 16%;
+	--brand: #32ade6;
+	color-scheme: dark;
+}
+
+/* Производные — на каждом элементе темы: иначе превью .light внутри тёмного окна унаследует значения окна. */
+:root,
+.light,
+.dark {
+	--ring: var(--primary-text);
+	--border-hover: color-mix(in srgb, var(--border) 50%, var(--input));
+	--primary-soft: color-mix(in srgb, var(--primary) var(--soft-mix), var(--background));
+	/* Обложка одинаково тёмная в обеих темах. */
+	--on-cover: #ffffff;
+	--cover-scrim: #000000;
+	--brand-icon: #32ade6;
+	--brand-tile: #1d1d1f;
+	--brand-mark: #ffffff;
+}
+
+html[data-reduce-motion] {
+	--duration-fast: 0ms;
+	--duration-base: 0ms;
+	--duration-slow: 0ms;
+}
+
+html[data-reduce-motion] *,
+html[data-reduce-motion] *::before,
+html[data-reduce-motion] *::after {
+	transition-duration: 0.01ms !important;
+	animation-duration: 0.01ms !important;
+	animation-iteration-count: 1 !important;
+	scroll-behavior: auto !important;
+}
+
+/* Пока меняется размер окна, переходов нет (lib/layout-calm.ts). @keyframes не трогаем. */
+html[data-layout-calm] *,
+html[data-layout-calm] *::before,
+html[data-layout-calm] *::after {
+	transition: none !important;
+}
+
+/* Индикатор загрузки — не украшение: спиннер крутится и при «Меньше анимаций». */
+html[data-reduce-motion] .animate-spin {
+	animation-duration: 1s !important;
+	animation-iteration-count: infinite !important;
+}
+
+/* Пиксельный баннер диалога аккаунта: кадры сменяются рывком, сдвиги кратны 4px. */
+@keyframes px-clouds {
+	to {
+		transform: translateX(-440px);
+	}
+}
+@keyframes px-stars {
+	0% {
+		opacity: 1;
+	}
+	70%,
+	100% {
+		opacity: 0;
+	}
+}
+@keyframes px-bob {
+	0% {
+		transform: translateY(0);
+	}
+	50%,
+	100% {
+		transform: translateY(-4px);
+	}
+}
+@keyframes px-swap {
+	0% {
+		opacity: 1;
+	}
+	50%,
+	100% {
+		opacity: 0;
+	}
+}
+@keyframes px-jump {
+	0%,
+	100% {
+		transform: translateY(0);
+	}
+	25%,
+	75% {
+		transform: translateY(-4px);
+	}
+	50% {
+		transform: translateY(-8px);
+	}
+}
+@keyframes px-shake {
+	0%,
+	100% {
+		transform: translateX(0);
+	}
+	25%,
+	75% {
+		transform: translateX(-4px);
+	}
+	50% {
+		transform: translateX(4px);
+	}
+}
+.px-clouds {
+	animation: px-clouds 88s steps(110) infinite;
+}
+.px-stars {
+	animation: px-stars 2.4s steps(1, end) infinite;
+}
+.px-bob {
+	animation: px-bob var(--px-bob, 1.2s) steps(1, end) infinite;
+}
+.px-swap {
+	animation: px-swap var(--px-swap, 0.8s) steps(1, end) infinite;
+}
+/* Кадр `b` идёт со сдвигом на полцикла: кадры строго чередуются. */
+.px-swap-b {
+	animation-delay: calc(var(--px-swap, 0.8s) / -2);
+}
+.px-jump {
+	animation: px-jump 360ms steps(1, end);
+}
+.px-shake {
+	animation: px-shake 300ms steps(1, end);
+}
+html[data-reduce-motion] :is(.px-clouds, .px-stars, .px-bob, .px-swap, .px-jump, .px-shake) {
+	animation: none !important;
+}
+
+@keyframes progress-indeterminate {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(333%);
+	}
+}
+.progress-indeterminate {
+	animation: progress-indeterminate 1.2s var(--ease-in-out) infinite;
+}
+html[data-reduce-motion] .progress-indeterminate {
+	animation: none !important;
+}
+
+/* Стили sonner не в слое и сильнее утилит Tailwind, поэтому переопределяем здесь. */
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] {
+	box-shadow: none;
+	border-radius: var(--radius-xl);
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"]:focus-visible {
+	box-shadow: none;
+	outline: 2px solid var(--ring);
+	outline-offset: 2px;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] [data-button] {
+	height: 32px;
+	padding: 0 12px;
+	border-radius: 9999px;
+	border: 1px solid var(--border);
+	font-family: inherit;
+	font-size: 13px;
+	line-height: 18px;
+	font-weight: 500;
+	color: var(--foreground);
+	background: var(--card);
+	transition:
+		background-color var(--duration-fast) var(--ease-out),
+		scale var(--duration-fast) var(--ease-out);
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] [data-button]:hover {
+	background: var(--accent);
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] [data-button]:active {
+	scale: 0.98;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] [data-button]:focus-visible {
+	box-shadow: none;
+	outline: 2px solid var(--ring);
+	outline-offset: 2px;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] [data-cancel] {
+	border-color: transparent;
+	color: var(--muted-foreground);
+	background: transparent;
+}
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] [data-cancel]:hover {
+	color: var(--foreground);
+	background: var(--accent);
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation-duration: 250ms;
+	animation-timing-function: var(--ease-out);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring;
+	}
+	*:focus-visible {
+		outline-width: 2px;
+		outline-style: solid;
+		outline-offset: 2px;
+	}
+	.lucide {
+		stroke-width: 1.5;
+	}
+	/* Tailwind v4 убрал руку у кнопок. */
+	button,
+	a[href],
+	summary,
+	label[for],
+	select,
+	[role="button"],
+	[role="tab"],
+	[role="radio"],
+	[role="checkbox"],
+	[role="switch"],
+	[role="option"],
+	[role="menuitem"],
+	[role="menuitemradio"],
+	[role="menuitemcheckbox"],
+	[data-sonner-toast] [data-button] {
+		cursor: pointer;
+	}
+	:disabled,
+	[aria-disabled="true"] {
+		cursor: default;
+	}
+	html,
+	body,
+	#root {
+		@apply h-full overflow-hidden;
+	}
+	html {
+		@apply bg-sidebar;
+		font-synthesis: none;
+	}
+	body {
+		@apply bg-sidebar font-sans text-foreground antialiased;
+		letter-spacing: -0.006em;
+		font-kerning: normal;
+	}
+	::selection {
+		background: var(--foreground);
+		color: var(--background);
+	}
+	::-webkit-scrollbar {
+		width: 10px;
+		height: 10px;
+	}
+	::-webkit-scrollbar-track,
+	::-webkit-scrollbar-corner {
+		background: transparent;
+	}
+	::-webkit-scrollbar-track {
+		margin-block: 14px;
+	}
+	::-webkit-scrollbar-thumb {
+		border: 3px solid transparent;
+		border-radius: 9999px;
+		background-color: var(--control-track);
+		background-clip: content-box;
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background-color: var(--control-track-hover);
+	}
+}

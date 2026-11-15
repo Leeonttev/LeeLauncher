@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-modpack-unlink"
+description = "Enables the modpack_unlink command without any pre-configured scope."
+commands.allow = ["modpack_unlink"]
+
+[[permission]]
+identifier = "deny-modpack-unlink"
+description = "Denies the modpack_unlink command without any pre-configured scope."
+commands.deny = ["modpack_unlink"]

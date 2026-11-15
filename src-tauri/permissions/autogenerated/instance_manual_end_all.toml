@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-manual-end-all"
+description = "Enables the instance_manual_end_all command without any pre-configured scope."
+commands.allow = ["instance_manual_end_all"]
+
+[[permission]]
+identifier = "deny-instance-manual-end-all"
+description = "Denies the instance_manual_end_all command without any pre-configured scope."
+commands.deny = ["instance_manual_end_all"]

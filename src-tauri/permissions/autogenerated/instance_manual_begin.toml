@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-manual-begin"
+description = "Enables the instance_manual_begin command without any pre-configured scope."
+commands.allow = ["instance_manual_begin"]
+
+[[permission]]
+identifier = "deny-instance-manual-begin"
+description = "Denies the instance_manual_begin command without any pre-configured scope."
+commands.deny = ["instance_manual_begin"]

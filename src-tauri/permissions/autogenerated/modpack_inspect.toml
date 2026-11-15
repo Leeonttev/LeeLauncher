@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-modpack-inspect"
+description = "Enables the modpack_inspect command without any pre-configured scope."
+commands.allow = ["modpack_inspect"]
+
+[[permission]]
+identifier = "deny-modpack-inspect"
+description = "Denies the modpack_inspect command without any pre-configured scope."
+commands.deny = ["modpack_inspect"]

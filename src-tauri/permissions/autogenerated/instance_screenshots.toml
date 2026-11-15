@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-screenshots"
+description = "Enables the instance_screenshots command without any pre-configured scope."
+commands.allow = ["instance_screenshots"]
+
+[[permission]]
+identifier = "deny-instance-screenshots"
+description = "Denies the instance_screenshots command without any pre-configured scope."
+commands.deny = ["instance_screenshots"]

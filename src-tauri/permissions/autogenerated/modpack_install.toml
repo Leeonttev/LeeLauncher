@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-modpack-install"
+description = "Enables the modpack_install command without any pre-configured scope."
+commands.allow = ["modpack_install"]
+
+[[permission]]
+identifier = "deny-modpack-install"
+description = "Denies the modpack_install command without any pre-configured scope."
+commands.deny = ["modpack_install"]

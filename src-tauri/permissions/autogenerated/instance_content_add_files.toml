@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-content-add-files"
+description = "Enables the instance_content_add_files command without any pre-configured scope."
+commands.allow = ["instance_content_add_files"]
+
+[[permission]]
+identifier = "deny-instance-content-add-files"
+description = "Denies the instance_content_add_files command without any pre-configured scope."
+commands.deny = ["instance_content_add_files"]

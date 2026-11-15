@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-skins-worn"
+description = "Enables the skins_worn command without any pre-configured scope."
+commands.allow = ["skins_worn"]
+
+[[permission]]
+identifier = "deny-skins-worn"
+description = "Denies the skins_worn command without any pre-configured scope."
+commands.deny = ["skins_worn"]

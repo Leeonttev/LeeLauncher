@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instances-list"
+description = "Enables the instances_list command without any pre-configured scope."
+commands.allow = ["instances_list"]
+
+[[permission]]
+identifier = "deny-instances-list"
+description = "Denies the instances_list command without any pre-configured scope."
+commands.deny = ["instances_list"]

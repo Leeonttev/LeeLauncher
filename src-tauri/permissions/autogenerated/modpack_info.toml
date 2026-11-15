@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-modpack-info"
+description = "Enables the modpack_info command without any pre-configured scope."
+commands.allow = ["modpack_info"]
+
+[[permission]]
+identifier = "deny-modpack-info"
+description = "Denies the modpack_info command without any pre-configured scope."
+commands.deny = ["modpack_info"]

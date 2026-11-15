@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-content-update"
+description = "Enables the instance_content_update command without any pre-configured scope."
+commands.allow = ["instance_content_update"]
+
+[[permission]]
+identifier = "deny-instance-content-update"
+description = "Denies the instance_content_update command without any pre-configured scope."
+commands.deny = ["instance_content_update"]

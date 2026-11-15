@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-java-pick-file"
+description = "Enables the java_pick_file command without any pre-configured scope."
+commands.allow = ["java_pick_file"]
+
+[[permission]]
+identifier = "deny-java-pick-file"
+description = "Denies the java_pick_file command without any pre-configured scope."
+commands.deny = ["java_pick_file"]

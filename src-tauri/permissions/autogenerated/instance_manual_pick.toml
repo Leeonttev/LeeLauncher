@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-manual-pick"
+description = "Enables the instance_manual_pick command without any pre-configured scope."
+commands.allow = ["instance_manual_pick"]
+
+[[permission]]
+identifier = "deny-instance-manual-pick"
+description = "Denies the instance_manual_pick command without any pre-configured scope."
+commands.deny = ["instance_manual_pick"]

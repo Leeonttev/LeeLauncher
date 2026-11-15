@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-group-remove"
+description = "Enables the instance_group_remove command without any pre-configured scope."
+commands.allow = ["instance_group_remove"]
+
+[[permission]]
+identifier = "deny-instance-group-remove"
+description = "Denies the instance_group_remove command without any pre-configured scope."
+commands.deny = ["instance_group_remove"]

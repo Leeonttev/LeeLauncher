@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-skin-pick-files"
+description = "Enables the skin_pick_files command without any pre-configured scope."
+commands.allow = ["skin_pick_files"]
+
+[[permission]]
+identifier = "deny-skin-pick-files"
+description = "Denies the skin_pick_files command without any pre-configured scope."
+commands.deny = ["skin_pick_files"]

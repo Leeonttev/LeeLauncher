@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instance-install-cancel"
+description = "Enables the instance_install_cancel command without any pre-configured scope."
+commands.allow = ["instance_install_cancel"]
+
+[[permission]]
+identifier = "deny-instance-install-cancel"
+description = "Denies the instance_install_cancel command without any pre-configured scope."
+commands.deny = ["instance_install_cancel"]

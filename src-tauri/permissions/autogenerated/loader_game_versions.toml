@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-loader-game-versions"
+description = "Enables the loader_game_versions command without any pre-configured scope."
+commands.allow = ["loader_game_versions"]
+
+[[permission]]
+identifier = "deny-loader-game-versions"
+description = "Denies the loader_game_versions command without any pre-configured scope."
+commands.deny = ["loader_game_versions"]

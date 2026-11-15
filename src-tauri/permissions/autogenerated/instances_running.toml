@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-instances-running"
+description = "Enables the instances_running command without any pre-configured scope."
+commands.allow = ["instances_running"]
+
+[[permission]]
+identifier = "deny-instances-running"
+description = "Denies the instances_running command without any pre-configured scope."
+commands.deny = ["instances_running"]

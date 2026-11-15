@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-account-set-active"
+description = "Enables the account_set_active command without any pre-configured scope."
+commands.allow = ["account_set_active"]
+
+[[permission]]
+identifier = "deny-account-set-active"
+description = "Denies the account_set_active command without any pre-configured scope."
+commands.deny = ["account_set_active"]
