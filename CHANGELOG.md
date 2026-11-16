@@ -2,6 +2,24 @@
 
 Раздел `## X.Y.Z` попадает в релиз и на экран обновления в лаунчере. Внутри раздела — блоки `<!-- ru -->` и `<!-- en -->`.
 
+## 0.1.1
+
+<!-- ru -->
+
+- Если запущено несколько игр, у каждой видно, с какого ника она идёт: на карточке, на Главной, на странице сборки, в логе и в уведомлениях
+- В меню аккаунтов отмечено, какой аккаунт сейчас в игре
+- «Играть за…» в меню сборки — запуск с другого аккаунта без переключения
+- Предупреждение, если запускаете вторую игру с аккаунта, который уже играет (выключается в настройках)
+- Кнопка «Сайт» в статусе Discord ведёт на новый сайт launcher.leeonttev.pro
+
+<!-- en -->
+
+- When several games are running, each one shows which account it's playing as: on the card, on Home, on the instance page, in the log and in notifications
+- The account menu marks which accounts are in a game
+- "Play as…" in the instance menu starts a game with another account without switching
+- A warning when you start a second game with an account that's already playing (can be turned off in settings)
+- The "Website" button in the Discord status now opens the new site launcher.leeonttev.pro
+
 ## 0.1.0
 
 <!-- ru -->
