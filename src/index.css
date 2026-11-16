@@ -8,7 +8,6 @@
 @source not "../docs";
 @source not "../src-tauri";
 @source not "../installer";
-@source not "../site";
 
 @custom-variant dark (&:is(.dark *));
 

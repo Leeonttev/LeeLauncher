@@ -25,7 +25,7 @@ const APP_ID: &str = match option_env!("LEELAUNCHER_DISCORD_APP_ID") {
 	None => "1571634948295753788",
 };
 
-const SITE_URL: &str = "https://leeonttev.github.io/LeeLauncher/";
+const SITE_URL: &str = "https://launcher.leeonttev.pro/";
 const GITHUB_URL: &str = "https://github.com/leeonttev/LeeLauncher";
 /// Пауза между попытками подключиться к Discord.
 const RETRY: Duration = Duration::from_secs(20);
