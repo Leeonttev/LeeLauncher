@@ -12,8 +12,14 @@ type Activity = { label: string } | null;
 function useInstancesActivity(): Activity {
 	const { t } = useTranslation();
 	const store = useInstances();
-	const playing = store.instances.find((i) => statusOf(i, store) === "running");
-	return playing ? { label: t("nav.instancesPlaying", { name: playing.name }) } : null;
+	const playing = store.instances.filter((i) => statusOf(i, store) === "running");
+	if (!playing.length) return null;
+	return {
+		label:
+			playing.length > 1
+				? t("nav.instancesPlayingMany", { count: playing.length })
+				: t("nav.instancesPlaying", { name: playing[0].name }),
+	};
 }
 
 const planckTransition = { type: "spring", stiffness: 500, damping: 40, mass: 0.8 } as const;

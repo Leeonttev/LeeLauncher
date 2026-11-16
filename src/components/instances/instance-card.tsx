@@ -6,7 +6,8 @@ import { coverFrame, InstanceCover } from "@/components/instances/instance-cover
 import { coverFocusRing, onLinkKeyDown, stretchedLink } from "@/components/instances/instance-link";
 import { InstanceMenuContent } from "@/components/instances/instance-menu";
 import { InstanceMeta } from "@/components/instances/instance-meta";
-import { useSessionSeconds } from "@/components/instances/instance-text";
+import { GameAccount } from "@/components/instances/game-account";
+import { useSessionSeconds, useShownGameAccount } from "@/components/instances/instance-text";
 import { onCoverButton, PlayButton } from "@/components/instances/play-button";
 import { ProgressBar } from "@/components/instances/progress-bar";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -25,6 +26,8 @@ export function InstanceCard({ instance }: { instance: Instance }) {
 	const store = useInstances();
 	const status = statusOf(instance, store);
 	const session = useSessionSeconds(instance, store);
+	const gameAccount = useShownGameAccount(instance.id, store);
+	const duration = formatDuration(session ?? 0);
 	const titleRef = useRef<HTMLButtonElement>(null);
 	const moreRef = useRef<HTMLButtonElement>(null);
 	const actionsLabel = t("instances.card.actions", { name: instance.name });
@@ -66,14 +69,38 @@ export function InstanceCard({ instance }: { instance: Instance }) {
 									animate={{ opacity: 1 }}
 									exit={{ opacity: 0 }}
 									transition={{ duration: 0.12 }}
-									className="absolute top-3 left-3 flex h-6 max-w-[calc(100%-4rem)] items-center gap-1.5 rounded-full bg-cover-scrim/55 px-2.5 text-xs font-medium text-on-cover backdrop-blur-md"
+									className={cn(
+										"absolute top-3 left-3 flex h-6 max-w-[calc(100%-4rem)] items-center gap-1.5 rounded-full bg-cover-scrim/55 pr-2.5 text-xs font-medium text-on-cover backdrop-blur-md",
+										gameAccount ? "pl-1" : "pl-2.5",
+									)}
 								>
-									<span aria-hidden className="size-2 shrink-0 rounded-full bg-primary" />
-									<span className="truncate">
-										{t("instances.card.playing", {
-											duration: formatDuration(session ?? 0),
-										})}
-									</span>
+									{gameAccount ? (
+										<>
+											{/* Обрезается ник, время остаётся целым. */}
+											<span aria-hidden className="flex min-w-0 items-center">
+												<GameAccount account={gameAccount} />
+												<span className="shrink-0 whitespace-pre tabular-nums">
+													{` · ${duration}`}
+												</span>
+											</span>
+											<span className="sr-only">
+												{t("instances.card.playingAs", {
+													nick: gameAccount.username,
+													duration,
+												})}
+											</span>
+										</>
+									) : (
+										<>
+											<span
+												aria-hidden
+												className="size-2 shrink-0 rounded-full bg-primary"
+											/>
+											<span className="truncate">
+												{t("instances.card.playing", { duration })}
+											</span>
+										</>
+									)}
 								</motion.span>
 							)}
 						</AnimatePresence>

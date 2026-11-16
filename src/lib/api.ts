@@ -276,11 +276,22 @@ export type SystemMemory = {
 
 export type ProcessState = "starting" | "running" | "exited";
 
+/** Аккаунт, с которого идёт игра: снимок на момент запуска, удаление или смена активного его не меняют. */
+export type GameAccountInfo = {
+	/** `Account.id`. */
+	id: string;
+	uuid: string;
+	username: string;
+	kind: AccountKind;
+};
+
 export type InstanceProcessEvent = {
 	instanceId: string;
 	state: ProcessState;
 	/** `running`. */
 	pid?: number;
+	/** Нет — аккаунт ещё выбирается (первое `starting`) или ядро старое. */
+	account?: GameAccountInfo;
 	/** `exited`: код выхода (нет — процесс не запускался). */
 	exitCode?: number;
 	/** `exited`: код не 0 и игру не останавливали из лаунчера. */
@@ -297,6 +308,8 @@ export type RunningGame = {
 	instanceId: string;
 	state: "starting" | "running";
 	pid?: number;
+	/** Нет — аккаунт ещё выбирается. */
+	account?: GameAccountInfo;
 	/** ISO 8601. */
 	startedAt: string;
 };

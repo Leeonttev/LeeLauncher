@@ -34,6 +34,7 @@ import {
 	type AccountsStore,
 } from "@/lib/accounts";
 import type { Account } from "@/lib/api";
+import { gamesOfAccount, useInstances } from "@/lib/instances";
 import { cn } from "@/lib/utils";
 
 const spring = { type: "spring", stiffness: 500, damping: 35 } as const;
@@ -143,6 +144,7 @@ function AddAccountButton() {
 function SwitcherMenu({ store }: { store: AccountsStore }) {
 	const { t } = useTranslation();
 	const statusOf = useAccountStatus();
+	const instances = useInstances();
 	const [open, setOpen] = useState(false);
 	const triggerRef = useRef<HTMLButtonElement>(null);
 	const activeItemRef = useRef<HTMLDivElement>(null);
@@ -230,6 +232,7 @@ function SwitcherMenu({ store }: { store: AccountsStore }) {
 				<div className="max-h-[264px] overflow-y-auto">
 					{store.accounts.map((account) => {
 						const isActive = account.id === store.activeId;
+						const games = gamesOfAccount(account.id, instances);
 						return (
 							<AccountItem
 								key={account.id}
@@ -237,6 +240,13 @@ function SwitcherMenu({ store }: { store: AccountsStore }) {
 								account={account}
 								active={isActive}
 								status={statusOf(account)}
+								inGame={
+									games.length === 0
+										? null
+										: games.length === 1
+											? t("accounts.menu.inGame", { name: games[0].name })
+											: t("accounts.menu.inGameCount", { count: games.length })
+								}
 								onSelect={() => {
 									if (!isActive) void setActiveAccount(account.id);
 									if (account.needsRelogin)
@@ -267,11 +277,13 @@ type AccountItemProps = {
 	account: Account;
 	active: boolean;
 	status: string;
+	/** Подпись «В игре · …»; «нужно войти снова» важнее. */
+	inGame: string | null;
 	onSelect: () => void;
 	onRemove: () => void;
 };
 
-function AccountItem({ ref, account, active, status, onSelect, onRemove }: AccountItemProps) {
+function AccountItem({ ref, account, active, status, inGame, onSelect, onRemove }: AccountItemProps) {
 	const { t } = useTranslation();
 	const removeLabel = t("accounts.menu.removeTooltip");
 	const stop = (e: SyntheticEvent) => {
@@ -299,15 +311,22 @@ function AccountItem({ ref, account, active, status, onSelect, onRemove }: Accou
 				<span className={cn("truncate text-sm/5", active ? "font-semibold" : "font-medium")}>
 					{account.username}
 				</span>
-				<span
-					className={cn(
-						"flex items-center gap-1 text-xs",
-						account.needsRelogin ? "text-destructive" : "text-muted-foreground",
-					)}
-				>
-					{account.needsRelogin && <OctagonX className="shrink-0" />}
-					<span className="truncate">{status}</span>
-				</span>
+				{inGame && !account.needsRelogin ? (
+					<span className="flex items-center gap-1.5 text-xs text-primary-text">
+						<span aria-hidden className="size-1.5 shrink-0 rounded-full bg-primary" />
+						<span className="truncate">{inGame}</span>
+					</span>
+				) : (
+					<span
+						className={cn(
+							"flex items-center gap-1 text-xs",
+							account.needsRelogin ? "text-destructive" : "text-muted-foreground",
+						)}
+					>
+						{account.needsRelogin && <OctagonX className="shrink-0" />}
+						<span className="truncate">{status}</span>
+					</span>
+				)}
 			</span>
 			<Tooltip>
 				<TooltipTrigger asChild>

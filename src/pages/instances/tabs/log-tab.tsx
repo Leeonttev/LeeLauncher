@@ -13,7 +13,12 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { CenteredState } from "@/components/centered-state";
-import { useSessionSeconds } from "@/components/instances/instance-text";
+import { GameAccount } from "@/components/instances/game-account";
+import {
+	useSessionSeconds,
+	useShownAccount,
+	useShownGameAccount,
+} from "@/components/instances/instance-text";
 import { useScrollContainer } from "@/components/layout/scroll-container";
 import { SearchField } from "@/components/search-field";
 import { Segments } from "@/components/segments";
@@ -23,7 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useDelayedFlag } from "@/hooks/use-delayed-flag";
-import { contentApi, type Instance, type LogLine } from "@/lib/api";
+import { contentApi, type GameAccountInfo, type Instance, type LogLine } from "@/lib/api";
 import { errorText, toAppError } from "@/lib/errors";
 import { formatDateTime, formatDuration, formatNumber } from "@/lib/format";
 import { loadGameLog, useGameLog } from "@/lib/game-log";
@@ -283,11 +288,17 @@ function LogStatus({
 	const status = statusOf(instance, store);
 	const session = useSessionSeconds(instance, store);
 	const exit = store.lastExits[instance.id];
+	const runningAccount = useShownGameAccount(instance.id, store);
+	const exitAccount = useShownAccount(exit?.account ?? null);
 
 	if (status === "running" || status === "launching") {
 		return (
 			<p className="mt-3.5 flex items-center gap-2 text-[13px]/[18px] text-primary-text">
-				<span aria-hidden className="size-2 shrink-0 rounded-full bg-primary" />
+				{runningAccount ? (
+					<AccountPrefix account={runningAccount} />
+				) : (
+					<span aria-hidden className="size-2 shrink-0 rounded-full bg-primary" />
+				)}
 				<span className="truncate tabular-nums">
 					{t("log.running", { duration: formatDuration(session ?? 0), count: lineCount })}
 				</span>
@@ -298,6 +309,7 @@ function LogStatus({
 		return (
 			<div className="mt-2 flex items-center gap-2 text-[13px]/[18px] text-destructive">
 				<OctagonX className="shrink-0" />
+				{exitAccount && <AccountPrefix account={exitAccount} />}
 				<span className="truncate">
 					{exit.exitCode !== null
 						? t("log.crashed", { code: exit.exitCode })
@@ -323,6 +335,19 @@ function LogStatus({
 	}
 	if (!text) return null;
 	return <p className="mt-3.5 truncate text-[13px]/[18px] text-muted-foreground">{text}</p>;
+}
+
+/** «◼ ник ·» перед статусом: обрезается ник, а не статус. */
+function AccountPrefix({ account }: { account: GameAccountInfo }) {
+	return (
+		<span className="flex max-w-[45%] min-w-0 shrink items-center gap-2 text-muted-foreground">
+			<GameAccount account={account} />
+			<span aria-hidden className="shrink-0">
+				{"·"}
+			</span>
+			<span className="sr-only">{account.username}</span>
+		</span>
+	);
 }
 
 function LogArea({

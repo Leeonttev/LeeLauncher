@@ -1,7 +1,21 @@
-import type { Instance } from "@/lib/api";
+import { useAccounts } from "@/lib/accounts";
+import type { GameAccountInfo, Instance } from "@/lib/api";
 import { formatDuration, formatWhenCapitalized } from "@/lib/format";
 import { i18n } from "@/lib/i18n";
-import { useNow, type InstancesStore } from "@/lib/instances";
+import { gameAccountOf, showGameAccount, useNow, type InstancesStore } from "@/lib/instances";
+
+/** Аккаунт идущей игры, если ник нужно показать; иначе `null`. */
+export function useShownGameAccount(instanceId: string, store: InstancesStore): GameAccountInfo | null {
+	const accounts = useAccounts();
+	const account = gameAccountOf(instanceId, store);
+	return showGameAccount(account, accounts) ? account : null;
+}
+
+/** То же для уже закрытой игры (аккаунт из события выхода). */
+export function useShownAccount(account: GameAccountInfo | null): GameAccountInfo | null {
+	const accounts = useAccounts();
+	return showGameAccount(account, accounts) ? account : null;
+}
 
 export function useSessionSeconds(instance: Instance, store: InstancesStore): number | null {
 	const startedAt = store.processes[instance.id]?.startedAt ?? null;

@@ -51,7 +51,7 @@ export function InstanceRow({ instance }: { instance: Instance }) {
 							{versionLabel(instance)}
 						</p>
 					</div>
-					<InstanceMeta instance={instance} variant="row" className="w-40 shrink-0" />
+					<InstanceMeta instance={instance} variant="row" className="w-52 shrink-0" />
 					<PlayButton instance={instance} size="row" />
 					<DropdownMenu>
 						<Tooltip>

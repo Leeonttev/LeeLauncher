@@ -1,8 +1,16 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
-import { activeAccount, getAccounts, openAddAccountDialog, openReloginDialog } from "@/lib/accounts";
+import {
+	activeAccount,
+	getAccounts,
+	openAddAccountDialog,
+	openReloginDialog,
+	type AccountsStore,
+} from "@/lib/accounts";
 import {
 	instancesApi,
+	type Account,
+	type GameAccountInfo,
 	type InstallFinished,
 	type InstallMode,
 	type InstallProgress,
@@ -31,6 +39,7 @@ import {
 import { i18n } from "@/lib/i18n";
 import { LOADER_NAMES, javaMajorFor } from "@/lib/loaders";
 import { getRoute, instancePath, navigate } from "@/lib/router";
+import { readStorage, writeStorage } from "@/lib/storage";
 import { invalidateGameVersions, revalidateVersions } from "@/lib/versions";
 
 export type InstanceStatus =
@@ -40,6 +49,10 @@ export type ProcessInfo = {
 	/** `launching` — команда ушла в ядро, `starting` — ядро готовит запуск. */
 	phase: "launching" | "starting" | "running";
 	startedAt: number | null;
+	/** С какого аккаунта идёт игра; до ответа ядра — тот, которым запускали. */
+	account: GameAccountInfo | null;
+	/** Аккаунт прислало ядро. Старое ядро его не шлёт — тогда ник не показываем и о втором запуске не спрашиваем. */
+	coreAccount: boolean;
 };
 
 export type InstancesStore = {
@@ -62,6 +75,7 @@ export type LastExit = {
 	crashed: boolean;
 	at: number;
 	durationSecs: number;
+	account: GameAccountInfo | null;
 };
 
 let state: InstancesStore = {
@@ -173,7 +187,13 @@ function onProcess(event: InstanceProcessEvent) {
 		set({
 			processes: {
 				...state.processes,
-				[id]: { phase: "starting", startedAt: current?.startedAt ?? null },
+				// Первое `starting` приходит без аккаунта: держим тот, которым запускали.
+				[id]: {
+					phase: "starting",
+					startedAt: current?.startedAt ?? null,
+					account: event.account ?? current?.account ?? null,
+					coreAccount: Boolean(event.account) || (current?.coreAccount ?? false),
+				},
 			},
 		});
 		return;
@@ -182,7 +202,13 @@ function onProcess(event: InstanceProcessEvent) {
 		set({
 			processes: {
 				...state.processes,
-				[id]: { phase: "running", startedAt: current?.startedAt ?? Date.now() },
+				// У `running` аккаунт есть всегда; нет — ядро старое, ник не показываем.
+				[id]: {
+					phase: "running",
+					startedAt: current?.startedAt ?? Date.now(),
+					account: event.account ?? null,
+					coreAccount: Boolean(event.account),
+				},
 			},
 			progress: without(state.progress, id),
 		});
@@ -190,6 +216,7 @@ function onProcess(event: InstanceProcessEvent) {
 	}
 	// Ошибку запуска показывает `launchInstance`: команда вернула ту же.
 	const startedAt = current?.startedAt ?? null;
+	const account = event.account ?? (current?.coreAccount ? current.account : null);
 	const ran = !event.error && (event.exitCode !== undefined || startedAt !== null);
 	const seconds = event.durationSecs ?? (startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0);
 	set({
@@ -204,12 +231,17 @@ function onProcess(event: InstanceProcessEvent) {
 						crashed: Boolean(event.crashed),
 						at: Date.now(),
 						durationSecs: seconds,
+						account,
 					},
 				}
 			: state.lastExits,
 	});
 	if (!ran) return;
-	const name = findInstance(id)?.name ?? "";
+	const instanceName = findInstance(id)?.name ?? "";
+	const name =
+		account && showGameAccount(account, getAccounts())
+			? i18n.t("toasts.sessionAs", { name: instanceName, nick: account.username })
+			: instanceName;
 	if (event.crashed) {
 		const exitCode = event.exitCode ?? null;
 		toast.error(i18n.t("toasts.crashed"), {
@@ -265,6 +297,8 @@ async function restoreRunning() {
 			processes[game.instanceId] = {
 				phase: game.state,
 				startedAt: Number.isNaN(startedAt) ? Date.now() : startedAt,
+				account: game.account ?? null,
+				coreAccount: Boolean(game.account),
 			};
 		}
 		set({ processes });
@@ -368,14 +402,43 @@ function showError(err: unknown) {
 	toast.error(errorText(toAppError(err)));
 }
 
-/** `returnFocus` — куда вернуть фокус после диалога аккаунта. */
+/* Аккаунт игры. */
+
+export function toGameAccount(account: Account): GameAccountInfo {
+	return { id: account.id, uuid: account.uuid, username: account.username, kind: account.kind };
+}
+
+/** Ник показываем, когда есть что различать: аккаунтов несколько или игра идёт не с активного. */
+export function showGameAccount(account: GameAccountInfo | null, accounts: AccountsStore): boolean {
+	// До загрузки списка не знаем, сколько аккаунтов: иначе ник мелькнёт и пропадёт.
+	if (!account || accounts.status !== "ready") return false;
+	return accounts.accounts.length >= 2 || account.id !== accounts.activeId;
+}
+
+export function gameAccountOf(id: string, store: InstancesStore = state): GameAccountInfo | null {
+	const process = store.processes[id];
+	return process?.coreAccount ? process.account : null;
+}
+
+/** Сборки, которые сейчас идут или запускаются с этого аккаунта. */
+export function gamesOfAccount(
+	accountId: string,
+	store: InstancesStore = state,
+	exceptId?: string,
+): Instance[] {
+	return store.instances.filter((i) => i.id !== exceptId && gameAccountOf(i.id, store)?.id === accountId);
+}
+
+/** `returnFocus` — куда вернуть фокус после диалога аккаунта. `accountId` — не активный, без смены активного. */
 export async function launchInstance(
 	id: string,
 	returnFocus?: HTMLElement | null,
-	options?: { world?: string },
+	options?: { world?: string; accountId?: string; confirmed?: boolean },
 ) {
 	const accounts = getAccounts();
-	const account = activeAccount(accounts);
+	const account = options?.accountId
+		? (accounts.accounts.find((a) => a.id === options.accountId) ?? null)
+		: activeAccount(accounts);
 	if (!account) {
 		openAddAccountDialog(returnFocus);
 		return;
@@ -385,18 +448,37 @@ export async function launchInstance(
 		return;
 	}
 	if (state.processes[id]) return;
+	if (!options?.confirmed && sameAccountWarning() && gamesOfAccount(account.id, state, id).length) {
+		// Аккаунт выбран явно («Играть за…») — он и выделен в окне.
+		openLaunchAsDialog(
+			id,
+			account.id,
+			Boolean(options?.accountId),
+			options?.world ?? null,
+			returnFocus ?? null,
+		);
+		return;
+	}
 	logTails.delete(id);
 	set({
-		processes: { ...state.processes, [id]: { phase: "launching", startedAt: null } },
+		processes: {
+			...state.processes,
+			[id]: {
+				phase: "launching",
+				startedAt: null,
+				account: toGameAccount(account),
+				coreAccount: false,
+			},
+		},
 		installErrors: without(state.installErrors, id),
 	});
 	try {
-		await instancesApi.launch(id, { world: options?.world });
+		await instancesApi.launch(id, { world: options?.world, accountId: options?.accountId });
 	} catch (err) {
 		set({ processes: without(state.processes, id), progress: without(state.progress, id) });
 		const error = toAppError(err);
 		if (error.code === "needs_relogin") {
-			const current = activeAccount(getAccounts());
+			const current = getAccounts().accounts.find((a) => a.id === account.id);
 			if (current) openReloginDialog(current, returnFocus);
 			return;
 		}
@@ -658,7 +740,7 @@ export type InstanceDialogs = {
 	instanceId: string | null;
 	/** Меняется при каждом открытии: содержимое диалога начинается заново. */
 	session: number;
-	crash: { exitCode: number | null; lines: string[] } | null;
+	crash: { exitCode: number | null; lines: string[]; account: GameAccountInfo | null } | null;
 	leaveAfterRemove: boolean;
 	returnFocus: HTMLElement | null;
 	createPreset: CreatePreset | null;
@@ -724,7 +806,7 @@ export async function openCrashDialog(id: string, exitCode: number | null) {
 		kind: "crash",
 		instanceId: id,
 		session: dialogs.session + 1,
-		crash: { exitCode, lines },
+		crash: { exitCode, lines, account: state.lastExits[id]?.account ?? null },
 		leaveAfterRemove: false,
 		returnFocus: null,
 		createPreset: null,
@@ -753,6 +835,92 @@ export function useInstanceDialogs(): InstanceDialogs {
 
 export function getInstanceDialogs(): InstanceDialogs {
 	return dialogs;
+}
+
+/* Второй запуск с того же аккаунта: спросить, за кого играть. */
+
+const WARN_KEY = "warn-same-account";
+let warnSameAccount = readStorage(WARN_KEY) !== "off";
+const warnListeners = new Set<() => void>();
+
+function sameAccountWarning() {
+	return warnSameAccount;
+}
+
+export function setSameAccountWarning(on: boolean) {
+	warnSameAccount = on;
+	writeStorage(WARN_KEY, on ? null : "off");
+	for (const listener of warnListeners) listener();
+}
+
+export function useSameAccountWarning(): boolean {
+	return useSyncExternalStore(
+		(listener) => {
+			warnListeners.add(listener);
+			return () => warnListeners.delete(listener);
+		},
+		() => warnSameAccount,
+	);
+}
+
+export type LaunchAsDialog = {
+	open: boolean;
+	session: number;
+	instanceId: string | null;
+	/** Аккаунт, которым собирались запустить. */
+	accountId: string | null;
+	/** Выбран явно: он выделен по умолчанию, а не первый свободный. */
+	explicit: boolean;
+	world: string | null;
+	returnFocus: HTMLElement | null;
+};
+
+let launchAs: LaunchAsDialog = {
+	open: false,
+	session: 0,
+	instanceId: null,
+	accountId: null,
+	explicit: false,
+	world: null,
+	returnFocus: null,
+};
+const launchAsListeners = new Set<() => void>();
+
+function setLaunchAs(next: LaunchAsDialog) {
+	launchAs = next;
+	for (const listener of launchAsListeners) listener();
+}
+
+function openLaunchAsDialog(
+	instanceId: string,
+	accountId: string,
+	explicit: boolean,
+	world: string | null,
+	returnFocus: HTMLElement | null,
+) {
+	setLaunchAs({
+		open: true,
+		session: launchAs.session + 1,
+		instanceId,
+		accountId,
+		explicit,
+		world,
+		returnFocus: returnFocus ?? (document.activeElement as HTMLElement | null),
+	});
+}
+
+export function closeLaunchAsDialog() {
+	setLaunchAs({ ...launchAs, open: false });
+}
+
+export function useLaunchAsDialog(): LaunchAsDialog {
+	return useSyncExternalStore(
+		(listener) => {
+			launchAsListeners.add(listener);
+			return () => launchAsListeners.delete(listener);
+		},
+		() => launchAs,
+	);
 }
 
 import.meta.hot?.dispose(() => {

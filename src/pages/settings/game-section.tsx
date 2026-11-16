@@ -5,6 +5,7 @@ import { JavaSelect } from "@/components/instances/java-select";
 import { MemoryField } from "@/components/instances/memory-field";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import type { JavaInstall } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { formatMemory } from "@/lib/format";
@@ -17,6 +18,7 @@ import {
 	updateSettings,
 	useGameSettings,
 } from "@/lib/game-settings";
+import { setSameAccountWarning, useSameAccountWarning } from "@/lib/instances";
 import { cn } from "@/lib/utils";
 import { SettingRow } from "@/pages/settings/setting-row";
 
@@ -46,6 +48,7 @@ export function GameSection() {
 			<div className="mt-2 divide-y divide-border">
 				<MemoryRow />
 				<JavaRows />
+				<SameAccountRow />
 				<DataFolderRow />
 			</div>
 		</section>
@@ -173,6 +176,21 @@ function JavaMajorRow({
 				onChange={(next) => void updateSettings({ javaPaths: { [String(major)]: next } })}
 			/>
 		</div>
+	);
+}
+
+function SameAccountRow() {
+	const { t } = useTranslation();
+	const warn = useSameAccountWarning();
+	return (
+		<SettingRow
+			inline
+			htmlFor="settings-same-account"
+			title={t("settings.game.sameAccountWarning.title")}
+			description={t("settings.game.sameAccountWarning.description")}
+		>
+			<Switch id="settings-same-account" checked={warn} onCheckedChange={setSameAccountWarning} />
+		</SettingRow>
 	);
 }
 

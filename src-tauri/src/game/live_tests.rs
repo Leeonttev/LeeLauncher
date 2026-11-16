@@ -64,6 +64,8 @@ impl Recorder {
 
 fn offline() -> LaunchCredentials {
 	LaunchCredentials {
+		account_id: "test".into(),
+		kind: crate::accounts::AccountKind::Offline,
 		username: "LeeTest".into(),
 		// md5("OfflinePlayer:LeeTest") с битами версии 3 — значение не важно для запуска.
 		uuid: "6e2b4e43-7a0b-3d4f-9a52-2f1f7b0c1d2e".into(),

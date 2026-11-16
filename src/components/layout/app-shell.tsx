@@ -37,6 +37,7 @@ import { GroupDialogs } from "@/pages/instances/group-dialogs";
 import { InstanceDialogs } from "@/pages/instances/instance-dialogs";
 import { InstancePage } from "@/pages/instances/instance-page";
 import { InstancesPage } from "@/pages/instances/instances-page";
+import { LaunchAsDialog } from "@/pages/instances/launch-as-dialog";
 import { SettingsPage } from "@/pages/settings/settings-page";
 
 /** Просмотр в 3D тяжёлый: грузится при первом входе на страницу. */
@@ -134,6 +135,7 @@ export function AppShell() {
 				<RemoveAccountDialog />
 				<CreateInstanceDialog />
 				<InstanceDialogs />
+				<LaunchAsDialog />
 				<GroupDialogs />
 				<DepsDialog />
 				<InstallModpackDialog />

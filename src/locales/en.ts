@@ -45,6 +45,7 @@ export const en: Translation = {
 		skins: "Skins",
 		settings: "Settings",
 		instancesPlaying: "Instances · playing: {name}",
+		instancesPlayingMany: "Instances · games running: {count}",
 	},
 	home: {
 		greeting: "Hi, {username}",
@@ -63,6 +64,9 @@ export const en: Translation = {
 			lastPlayedHint: "when you last played",
 			playingNow: "Now",
 			playingHint: "you're playing {name}",
+			playingHintAs: "{nick} is playing {name}",
+			playingHintMany_one: "{count} game running",
+			playingHintMany_other: "{count} games running",
 			favoriteHint: "where you've played the most",
 			favoriteAria: "Open {name}",
 		},
@@ -253,6 +257,10 @@ export const en: Translation = {
 			dataFolder: {
 				title: "Data folder",
 			},
+			sameAccountWarning: {
+				title: "Warn about a second game on the same account",
+				description: "A server disconnects one of two games on the same account",
+			},
 		},
 		discord: {
 			title: "Discord",
@@ -313,6 +321,9 @@ export const en: Translation = {
 			label: "Accounts",
 			removeTooltip: "Remove (Del)",
 			add: "Add account",
+			inGame: "In game · {name}",
+			inGameCount_one: "In game · {count} instance",
+			inGameCount_other: "In game · {count} instances",
 		},
 		remove: {
 			title: "Remove {username}?",
@@ -425,12 +436,14 @@ export const en: Translation = {
 			actions: "Actions for {name}",
 			lastPlayed: "{when} · {total}",
 			playing: "Playing · {duration}",
+			playingAs: "Playing as {nick} · {duration}",
 			installFailed: "Installation failed",
 			aria: {
 				play: "Play {name}",
 				install: "Install {name}",
 				retry: "Retry installing {name}",
 				stop: "Stop {name}",
+				stopAs: "Stop {name} ({nick})",
 				cancel: "Cancel installing {name}",
 			},
 		},
@@ -458,9 +471,14 @@ export const en: Translation = {
 			toNewGroup: "To a new folder…",
 			newGroup: "New folder…",
 			removeFromGroup: "Remove from folder",
+			playAs: "Play as…",
+			accountInGame: "in game",
 		},
 		stopDialog: {
 			title: "Stop the game?",
+			titleNamed: "Stop {name}?",
+			descriptionAs:
+				"{nick}'s game will close right away without saving. Unsaved progress in the world may be lost.",
 			description:
 				"The game will close right away without saving. Unsaved progress in your world may be lost.",
 			confirm: "Stop",
@@ -804,12 +822,22 @@ export const en: Translation = {
 		},
 		notesDialog: "What's new in {version}",
 	},
+	launchAs: {
+		title: "{nick} is already playing",
+		description:
+			"{name} is already running on this account. If both games join the same server, the server will disconnect one of them. Singleplayer is fine.",
+		pick: "Play as",
+		busy: "Playing {name}",
+		dontAsk: "Don't ask again",
+		confirm: "Play",
+	},
 	toasts: {
 		region: "Notifications",
 		close: "Close notification",
 		installed: "{name} is installed",
 		installFailed: "Couldn't install {name}",
 		session: "Session: {duration}",
+		sessionAs: "{name} · {nick}",
 		crashed: "The game crashed",
 		duplicated: "Instance duplicated",
 		deleted: "{name} deleted",

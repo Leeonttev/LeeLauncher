@@ -10,6 +10,7 @@ import {
 	RefreshCcwDot,
 	Square,
 	Trash2,
+	UserRound,
 	type LucideIcon,
 } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
@@ -35,12 +36,15 @@ import {
 	DropdownMenuSubContent,
 	DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
+import { AccountAvatar } from "@/components/accounts/account-avatar";
 import { usePendingAction } from "@/hooks/use-pending-action";
+import { useAccounts } from "@/lib/accounts";
 import type { Instance } from "@/lib/api";
 import { toAppError } from "@/lib/errors";
 import { groupErrorText, groupKey, listGroups, openGroupDialog } from "@/lib/groups";
 import {
 	duplicateInstance,
+	gamesOfAccount,
 	isBusy,
 	launchInstance,
 	moveInstanceToGroup,
@@ -119,6 +123,13 @@ export function InstanceMenuContent({ instance, kind, onPage = false, focusTarge
 			: t("instance.menu.busyInstalling")
 		: null;
 
+	const playAs = (accountId: string) =>
+		defer(() => void launchInstance(instance.id, focusTarget(), { accountId }));
+	const accountCount = useAccounts().accounts.length;
+	const playAsMenu = status === "installed" && accountCount >= 2 && (
+		<PlayAs parts={parts} onSelect={playAs} />
+	);
+
 	const dialog = (name: "rename" | "reinstall" | "remove" | "stop") =>
 		defer(() =>
 			openInstanceDialog(name, instance.id, { returnFocus: focusTarget(), leaveAfterRemove: onPage }),
@@ -144,12 +155,19 @@ export function InstanceMenuContent({ instance, kind, onPage = false, focusTarge
 							onSelect={() => dialog("stop")}
 						/>
 					)}
+					{playAsMenu}
 					<MenuRow
 						Item={Item}
 						icon={ArrowUpRight}
 						label={t("instance.menu.open")}
 						onSelect={() => navigate(instancePath(instance.id))}
 					/>
+					<Separator className="-mx-1.5 my-1" />
+				</>
+			)}
+			{onPage && playAsMenu && (
+				<>
+					{playAsMenu}
 					<Separator className="-mx-1.5 my-1" />
 				</>
 			)}
@@ -214,6 +232,44 @@ export function InstanceMenuContent({ instance, kind, onPage = false, focusTarge
 		<ContextMenuContent className={className} onCloseAutoFocus={onCloseAutoFocus}>
 			{items}
 		</ContextMenuContent>
+	);
+}
+
+/** Запуск с другим аккаунтом без смены активного. */
+function PlayAs({ parts, onSelect }: { parts: Parts; onSelect: (accountId: string) => void }) {
+	const { t } = useTranslation();
+	const accounts = useAccounts();
+	const store = useInstances();
+	const { Item, Sub, SubTrigger, SubContent } = parts;
+	return (
+		<Sub>
+			<SubTrigger className="h-9 gap-2.5 px-2.5">
+				<UserRound className="text-muted-foreground" />
+				<span className="flex-1 truncate">{t("instance.menu.playAs")}</span>
+			</SubTrigger>
+			<SubContent className="max-w-80 min-w-52">
+				<div className="max-h-72 overflow-y-auto">
+					{accounts.accounts.map((account) => {
+						const busy = gamesOfAccount(account.id, store).length > 0;
+						return (
+							<Item
+								key={account.id}
+								className="h-10 gap-2.5 px-2.5"
+								onSelect={() => onSelect(account.id)}
+							>
+								<AccountAvatar account={account} size={24} surface="popover" />
+								<span className="flex-1 truncate">{account.username}</span>
+								{busy && (
+									<span className="ml-2 shrink-0 text-xs text-muted-foreground">
+										{t("instance.menu.accountInGame")}
+									</span>
+								)}
+							</Item>
+						);
+					})}
+				</div>
+			</SubContent>
+		</Sub>
 	);
 }
 

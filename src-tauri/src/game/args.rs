@@ -406,6 +406,8 @@ mod tests {
 
 	fn creds(token: &str, user_type: &'static str) -> LaunchCredentials {
 		LaunchCredentials {
+			account_id: "test".into(),
+			kind: crate::accounts::AccountKind::Microsoft,
 			username: "Steve Jr".into(),
 			uuid: "b50ad385-829d-3141-a216-7e7d7539ba7f".into(),
 			access_token: token.into(),

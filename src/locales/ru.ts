@@ -43,6 +43,7 @@ export const ru = {
 		skins: "Скины",
 		settings: "Настройки",
 		instancesPlaying: "Сборки · играет: {name}",
+		instancesPlayingMany: "Сборки · идут игры: {count}",
 	},
 	home: {
 		greeting: "Привет, {username}",
@@ -61,6 +62,11 @@ export const ru = {
 			lastPlayedHint: "последний раз вы играли",
 			playingNow: "Сейчас",
 			playingHint: "вы играете в {name}",
+			playingHintAs: "{nick} играет в {name}",
+			playingHintMany_one: "идёт {count} игра",
+			playingHintMany_few: "идут {count} игры",
+			playingHintMany_many: "идут {count} игр",
+			playingHintMany_other: "идут {count} игры",
 			favoriteHint: "здесь вы провели больше всего времени",
 			favoriteAria: "Открыть сборку {name}",
 		},
@@ -253,6 +259,10 @@ export const ru = {
 			dataFolder: {
 				title: "Папка данных",
 			},
+			sameAccountWarning: {
+				title: "Предупреждать о второй игре с того же аккаунта",
+				description: "Сервер отключит одну из двух игр с одного аккаунта",
+			},
 		},
 		discord: {
 			title: "Discord",
@@ -312,6 +322,11 @@ export const ru = {
 			label: "Аккаунты",
 			removeTooltip: "Удалить (Del)",
 			add: "Добавить аккаунт",
+			inGame: "В игре · {name}",
+			inGameCount_one: "В игре · {count} сборка",
+			inGameCount_few: "В игре · {count} сборки",
+			inGameCount_many: "В игре · {count} сборок",
+			inGameCount_other: "В игре · {count} сборки",
 		},
 		remove: {
 			title: "Удалить аккаунт {username}?",
@@ -424,12 +439,14 @@ export const ru = {
 			actions: "Действия со сборкой {name}",
 			lastPlayed: "{when} · {total}",
 			playing: "Играет · {duration}",
+			playingAs: "Играет как {nick} · {duration}",
 			installFailed: "Не удалось установить",
 			aria: {
 				play: "Играть: {name}",
 				install: "Установить: {name}",
 				retry: "Повторить установку: {name}",
 				stop: "Остановить: {name}",
+				stopAs: "Остановить {name} ({nick})",
 				cancel: "Отменить установку: {name}",
 			},
 		},
@@ -457,9 +474,14 @@ export const ru = {
 			toNewGroup: "В новую папку…",
 			newGroup: "Новая папка…",
 			removeFromGroup: "Убрать из папки",
+			playAs: "Играть за…",
+			accountInGame: "в игре",
 		},
 		stopDialog: {
 			title: "Остановить игру?",
+			titleNamed: "Остановить {name}?",
+			descriptionAs:
+				"Игра за {nick} закроется сразу, без сохранения. Несохранённый прогресс в мире может пропасть.",
 			description:
 				"Игра закроется сразу, без сохранения. Несохранённый прогресс в мире может пропасть.",
 			confirm: "Остановить",
@@ -805,12 +827,22 @@ export const ru = {
 		},
 		notesDialog: "Что нового в {version}",
 	},
+	launchAs: {
+		title: "{nick} уже играет",
+		description:
+			"С этого аккаунта сейчас идёт «{name}». Если обе игры зайдут на один сервер, сервер отключит одну. В одиночной игре это не мешает.",
+		pick: "Запустить за",
+		busy: "Играет · {name}",
+		dontAsk: "Больше не спрашивать",
+		confirm: "Запустить",
+	},
 	toasts: {
 		region: "Уведомления",
 		close: "Закрыть уведомление",
 		installed: "{name} установлена",
 		installFailed: "Не удалось установить {name}",
 		session: "Сессия: {duration}",
+		sessionAs: "{name} · {nick}",
 		crashed: "Игра закрылась с ошибкой",
 		duplicated: "Сборка скопирована",
 		deleted: "Сборка {name} удалена",

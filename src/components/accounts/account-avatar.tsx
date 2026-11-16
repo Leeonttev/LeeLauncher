@@ -5,10 +5,11 @@ import { cachedSkinHead, skinHead } from "@/lib/skin-texture";
 import { useWornSkins } from "@/lib/skins";
 import { cn } from "@/lib/utils";
 
-/** Голова 8×8: размеры кратны 8, чтобы пиксель головы был целым. */
-export type AvatarSize = 24 | 32 | 40;
+/** Голова 8×8: размеры кратны 8, чтобы пиксель головы был целым. 16 — только в подписях запущенной игры. */
+export type AvatarSize = 16 | 24 | 32 | 40;
 
 const SIZE: Record<AvatarSize, string> = {
+	16: "size-4 rounded-[4px]",
 	24: "size-6 rounded-sm",
 	32: "size-8 rounded-sm",
 	40: "size-10 rounded-md",
@@ -32,11 +33,19 @@ type AccountAvatarProps = {
 	account: Pick<Account, "id" | "kind" | "username" | "uuid" | "needsRelogin">;
 	size: AvatarSize;
 	surface?: "sidebar" | "popover" | "cover";
+	/** Красная точка «нужно войти снова». */
+	showStatus?: boolean;
 	className?: string;
 };
 
 /** Пока неизвестно, есть ли сохранённый скин, — скелетон: иначе мелькнёт чужая голова с mc-heads.net. */
-export function AccountAvatar({ account, size, surface = "sidebar", className }: AccountAvatarProps) {
+export function AccountAvatar({
+	account,
+	size,
+	surface = "sidebar",
+	showStatus = true,
+	className,
+}: AccountAvatarProps) {
 	const worn = useWornSkins();
 	const microsoft = account.kind === "microsoft";
 	const record = microsoft ? worn.map[account.id] : undefined;
@@ -50,7 +59,7 @@ export function AccountAvatar({ account, size, surface = "sidebar", className }:
 			) : (
 				remote
 			)}
-			{account.needsRelogin && (
+			{showStatus && account.needsRelogin && (
 				<span
 					aria-hidden
 					className={cn(

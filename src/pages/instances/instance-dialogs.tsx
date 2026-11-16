@@ -14,8 +14,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { GameAccount } from "@/components/instances/game-account";
+import { useShownAccount } from "@/components/instances/instance-text";
 import {
 	closeInstanceDialog,
+	gameAccountOf,
 	installInstance,
 	openInstanceFolder,
 	removeInstance,
@@ -130,6 +133,8 @@ function RenameForm({ id, current }: { id: string; current: string }) {
 function ConfirmDialog({ dialogs }: { dialogs: DialogsState }) {
 	const { t } = useTranslation();
 	const instance = useDialogInstance(dialogs);
+	const store = useInstances();
+	const gameAccount = useShownAccount(dialogs.instanceId ? gameAccountOf(dialogs.instanceId, store) : null);
 	const [busy, setBusy] = useState(false);
 	const kind =
 		dialogs.kind === "stop" || dialogs.kind === "reinstall" || dialogs.kind === "remove"
@@ -141,8 +146,10 @@ function ConfirmDialog({ dialogs }: { dialogs: DialogsState }) {
 
 	const text = {
 		stop: {
-			title: t("instance.stopDialog.title"),
-			description: t("instance.stopDialog.description"),
+			title: t("instance.stopDialog.titleNamed", { name }),
+			description: gameAccount
+				? t("instance.stopDialog.descriptionAs", { nick: gameAccount.username })
+				: t("instance.stopDialog.description"),
 			confirm: t("instance.stopDialog.confirm"),
 		},
 		reinstall: {
@@ -209,6 +216,9 @@ function CrashDialog({ dialogs }: { dialogs: DialogsState }) {
 	const { t } = useTranslation();
 	const open = dialogs.open && dialogs.kind === "crash";
 	const crash = dialogs.crash;
+	const store = useInstances();
+	const crashAccount = useShownAccount(crash?.account ?? null);
+	const crashName = store.instances.find((i) => i.id === dialogs.instanceId)?.name ?? null;
 	const [copied, setCopied] = useState(false);
 	const log = crash?.lines.join("\n") ?? "";
 
@@ -234,6 +244,21 @@ function CrashDialog({ dialogs }: { dialogs: DialogsState }) {
 		>
 			<DialogContent className="w-[520px] max-w-[calc(100vw-2rem)] gap-0 p-6 sm:max-w-[520px]">
 				<DialogTitle className="pr-10">{t("instance.crash.title")}</DialogTitle>
+				{crashAccount && (
+					<p className="mt-1 flex min-w-0 items-center text-sm text-muted-foreground">
+						<GameAccount account={crashAccount} />
+						{crashName && (
+							<span aria-hidden className="min-w-0 truncate whitespace-pre">
+								{` · ${crashName}`}
+							</span>
+						)}
+						<span className="sr-only">
+							{crashName
+								? t("toasts.sessionAs", { name: crashName, nick: crashAccount.username })
+								: crashAccount.username}
+						</span>
+					</p>
+				)}
 				<DialogDescription className="mt-2 text-sm text-muted-foreground">
 					{crash?.exitCode != null
 						? t("instance.crash.description", { code: crash.exitCode })

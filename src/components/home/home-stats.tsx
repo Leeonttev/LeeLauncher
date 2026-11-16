@@ -4,7 +4,8 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { Instance } from "@/lib/api";
 import { formatDuration, formatWhenCapitalized } from "@/lib/format";
-import { useInstances, useNow } from "@/lib/instances";
+import { useAccounts } from "@/lib/accounts";
+import { gameAccountOf, showGameAccount, statusOf, useInstances, useNow } from "@/lib/instances";
 import { instancePath, navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
@@ -12,7 +13,11 @@ import { cn } from "@/lib/utils";
 export function HomeStats({ instances, className }: { instances: Instance[]; className?: string }) {
 	const { t } = useTranslation();
 	const store = useInstances();
-	const playing = instances.find((i) => store.processes[i.id] !== undefined) ?? null;
+	const accounts = useAccounts();
+	// «Сейчас» — и пока игра запускается, а число игр — только идущие, как у вкладки «Сборки».
+	const playingAll = instances.filter((i) => statusOf(i, store) === "running");
+	const playing = playingAll[0] ?? instances.find((i) => store.processes[i.id] !== undefined) ?? null;
+	const playingAccount = playing ? gameAccountOf(playing.id, store) : null;
 	// Раз в минуту: «Сегодня» сменится на «Вчера» и без новых данных.
 	const now = useNow(true);
 	const total = instances.reduce((sum, i) => sum + i.playtime, 0);
@@ -51,7 +56,16 @@ export function HomeStats({ instances, className }: { instances: Instance[]; cla
 					<Fact
 						icon={Play}
 						value={t("home.stats.playingNow")}
-						hint={t("home.stats.playingHint", { name: playing.name })}
+						hint={
+							playingAll.length > 1
+								? t("home.stats.playingHintMany", { count: playingAll.length })
+								: playingAccount && showGameAccount(playingAccount, accounts)
+									? t("home.stats.playingHintAs", {
+											nick: playingAccount.username,
+											name: playing.name,
+										})
+									: t("home.stats.playingHint", { name: playing.name })
+						}
 					/>
 				) : (
 					<Fact

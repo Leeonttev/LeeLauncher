@@ -72,6 +72,9 @@ pub struct LoginProgress {
 /// Данные для запуска игры. Токен в `Debug` не печатается.
 #[derive(Clone)]
 pub struct LaunchCredentials {
+	/// Запись аккаунта, с которой запускаем.
+	pub account_id: String,
+	pub kind: AccountKind,
 	pub username: String,
 	pub uuid: String,
 	pub access_token: String,
@@ -82,6 +85,8 @@ pub struct LaunchCredentials {
 impl std::fmt::Debug for LaunchCredentials {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("LaunchCredentials")
+			.field("account_id", &self.account_id)
+			.field("kind", &self.kind)
 			.field("username", &self.username)
 			.field("uuid", &self.uuid)
 			.field("user_type", &self.user_type)
@@ -401,6 +406,8 @@ impl Accounts {
 		let stored = find().await?;
 		if stored.account.kind == AccountKind::Offline {
 			return Ok(LaunchCredentials {
+				account_id: stored.account.id,
+				kind: AccountKind::Offline,
 				username: stored.account.username,
 				uuid: stored.account.uuid,
 				access_token: "0".into(),
@@ -422,6 +429,8 @@ impl Accounts {
 			return Err(AppError::new(ErrorCode::NeedsRelogin));
 		};
 		let credentials = |username: String, token: String| LaunchCredentials {
+			account_id: account.id.clone(),
+			kind: AccountKind::Microsoft,
 			username,
 			uuid: account.uuid.clone(),
 			access_token: token,

@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use self::args::LaunchContext;
 use self::logs::{Buffer, LogLine, Parser, Stream};
-use crate::accounts::LaunchCredentials;
+use crate::accounts::{AccountKind, LaunchCredentials};
 use crate::error::{AppError, ErrorCode};
 use crate::instances::{GameWindow, InstallState, Instance, now_iso};
 use crate::java::{self, JavaInstall};
@@ -66,6 +66,9 @@ pub struct ProcessEvent {
 	pub state: ProcessState,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub pid: Option<u32>,
+	/// С какого аккаунта игра. Нет — аккаунт ещё не выбран (первое `starting`) или запуск сорвался раньше.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub account: Option<GameAccount>,
 	/// Код выхода (`exited`). Нет — процесс не запустился или завершён без кода.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub exit_code: Option<i32>,
@@ -89,6 +92,7 @@ impl ProcessEvent {
 			instance_id: instance_id.to_owned(),
 			state,
 			pid: None,
+			account: None,
 			exit_code: None,
 			crashed: None,
 			killed: None,
@@ -105,6 +109,29 @@ pub struct LogBatch {
 	pub lines: Vec<LogLine>,
 }
 
+/// Аккаунт, с которым запущена игра. Снимок на момент запуска: переименование, удаление
+/// или смена активного аккаунта его не меняют.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameAccount {
+	pub id: String,
+	/// UUID игрока, с которым запущена игра (по нему голова и у удалённого аккаунта).
+	pub uuid: String,
+	pub username: String,
+	pub kind: AccountKind,
+}
+
+impl GameAccount {
+	fn of(creds: &LaunchCredentials) -> Self {
+		Self {
+			id: creds.account_id.clone(),
+			uuid: creds.uuid.clone(),
+			username: creds.username.clone(),
+			kind: creds.kind,
+		}
+	}
+}
+
 /// Запущенная игра для `instances_running`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +140,8 @@ pub struct RunningGame {
 	pub state: ProcessState,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub pid: Option<u32>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub account: Option<GameAccount>,
 	/// ISO 8601: начало запуска.
 	pub started_at: String,
 }
@@ -454,12 +483,27 @@ where
 		instance_id: id.clone(),
 		state: ProcessState::Starting,
 		pid: None,
+		account: None,
 		started_at: started_at.clone(),
 	});
 	events.process(ProcessEvent::new(&id, ProcessState::Starting));
 
+	let mut account = None;
 	let result = async {
 		let creds = credentials().await?;
+		// Аккаунт известен — второе `starting`, уже с ним.
+		let who = GameAccount::of(&creds);
+		account = Some(who.clone());
+		l.games.set_running(RunningGame {
+			instance_id: id.clone(),
+			state: ProcessState::Starting,
+			pid: None,
+			account: Some(who.clone()),
+			started_at: started_at.clone(),
+		});
+		let mut event = ProcessEvent::new(&id, ProcessState::Starting);
+		event.account = Some(who);
+		events.process(event);
 		let plan = prepare(&l, &instance, &creds, world.as_deref()).await?;
 		log::info!(
 			"запуск {id}: Minecraft {} {} {:?}, Java {} ({}), аккаунт {} ({})",
@@ -495,6 +539,7 @@ where
 			l.instances.end_run(&id);
 			l.games.clear_running(&id);
 			let mut event = ProcessEvent::new(&id, ProcessState::Exited);
+			event.account = account;
 			event.error = Some(err.clone());
 			events.process(event);
 			return Err(err);
@@ -522,11 +567,13 @@ where
 		instance_id: id.clone(),
 		state: ProcessState::Running,
 		pid,
+		account: account.clone(),
 		started_at,
 	};
 	l.games.set_running(game.clone());
 	let mut event = ProcessEvent::new(&id, ProcessState::Running);
 	event.pid = pid;
+	event.account = account.clone();
 	events.process(event);
 
 	tokio::spawn(watch(Watch {
@@ -538,6 +585,7 @@ where
 		buffer,
 		output,
 		started,
+		account,
 	}));
 	Ok(game)
 }
@@ -673,6 +721,7 @@ struct Watch {
 	buffer: Arc<Mutex<Buffer>>,
 	output: Option<std::io::BufWriter<std::fs::File>>,
 	started: Instant,
+	account: Option<GameAccount>,
 }
 
 /// Следит за процессом: лог, остановка, выход. После выхода — время игры и события.
@@ -686,6 +735,7 @@ async fn watch(w: Watch) {
 		buffer,
 		output,
 		started,
+		account,
 	} = w;
 	let (tx, rx) = mpsc::channel(1024);
 	if let Some(stdout) = child.stdout.take() {
@@ -763,6 +813,7 @@ async fn watch(w: Watch) {
 	event.crashed = Some(crashed);
 	event.killed = Some(killed);
 	event.duration_secs = Some(duration);
+	event.account = account;
 	events.process(event);
 }
 
@@ -830,11 +881,142 @@ mod tests {
 		assert_eq!(json["durationSecs"], 5);
 		assert!(json.get("pid").is_none());
 		assert!(json.get("error").is_none());
+		assert!(json.get("account").is_none());
+
+		event.account = Some(GameAccount {
+			id: "acc".into(),
+			uuid: "b50ad385-829d-3141-a216-7e7d7539ba7f".into(),
+			username: "Steve".into(),
+			kind: AccountKind::Offline,
+		});
+		let json = serde_json::to_value(&event).unwrap();
+		assert_eq!(
+			json["account"],
+			serde_json::json!({
+				"id": "acc",
+				"uuid": "b50ad385-829d-3141-a216-7e7d7539ba7f",
+				"username": "Steve",
+				"kind": "offline"
+			})
+		);
 	}
 
 	#[test]
 	fn command_line_length() {
 		let args = vec!["a".repeat(10), "b b".into()];
 		assert_eq!(command_line_len("java", &args), 7 + 13 + 6);
+	}
+
+	#[derive(Default)]
+	struct Recorder(Mutex<Vec<ProcessEvent>>);
+
+	impl GameEvents for Recorder {
+		fn process(&self, event: ProcessEvent) {
+			self.0.lock().unwrap().push(event);
+		}
+		fn log(&self, _: LogBatch) {}
+		fn changed(&self, _: Vec<Instance>) {}
+	}
+
+	fn steve() -> LaunchCredentials {
+		LaunchCredentials {
+			account_id: "acc".into(),
+			kind: AccountKind::Offline,
+			username: "Steve".into(),
+			uuid: "b50ad385-829d-3141-a216-7e7d7539ba7f".into(),
+			access_token: "0".into(),
+			user_type: "legacy",
+		}
+	}
+
+	/// Сборка, которая считается установленной, но с Java по несуществующему пути:
+	/// подготовка гарантированно падает и ничего не запускает.
+	async fn broken_instance(l: &Launcher, root: &Path) -> String {
+		let loader = crate::instances::Loader {
+			kind: crate::meta::LoaderKind::Vanilla,
+			version: None,
+		};
+		let instance = l
+			.instances
+			.create("test", "1.20.1", loader, None, None)
+			.await
+			.unwrap();
+		let java = root.join("no-java").join("javaw.exe");
+		l.instances
+			.modify(&instance.id, |i| {
+				i.install_state = InstallState::Installed;
+				i.installed = Some(crate::instances::Installed {
+					version_id: "1.20.1".into(),
+					java_major: 17,
+				});
+				i.java_path = Some(java.to_string_lossy().into_owned());
+				Ok(())
+			})
+			.await
+			.unwrap();
+		instance.id
+	}
+
+	#[tokio::test]
+	async fn prepare_failure_reports_account() {
+		let dir = tempfile::tempdir().unwrap();
+		let l = Launcher::new(Layout::new(dir.path().to_path_buf())).unwrap();
+		let id = broken_instance(&l, dir.path()).await;
+		let recorder = Arc::new(Recorder::default());
+
+		let err = launch(l.clone(), id.clone(), None, recorder.clone(), || async {
+			Ok(steve())
+		})
+		.await
+		.unwrap_err();
+
+		let who = GameAccount::of(&steve());
+		let events = recorder.0.lock().unwrap();
+		let states: Vec<_> = events.iter().map(|e| e.state).collect();
+		assert_eq!(
+			states,
+			[
+				ProcessState::Starting,
+				ProcessState::Starting,
+				ProcessState::Exited
+			]
+		);
+		assert_eq!(events[0].account, None);
+		assert_eq!(events[1].account.as_ref(), Some(&who));
+		assert_eq!(events[2].account.as_ref(), Some(&who));
+		assert_eq!(events[2].error.as_ref().map(|e| e.code), Some(err.code));
+		assert_ne!(err.code, ErrorCode::NoAccount);
+		// Сборка свободна, в запущенных её нет.
+		assert!(!l.instances.is_running(&id));
+		assert!(l.games.running().is_empty());
+	}
+
+	#[tokio::test]
+	async fn account_failure_reports_no_account() {
+		let dir = tempfile::tempdir().unwrap();
+		let l = Launcher::new(Layout::new(dir.path().to_path_buf())).unwrap();
+		let id = broken_instance(&l, dir.path()).await;
+
+		for code in [ErrorCode::NoAccount, ErrorCode::NeedsRelogin] {
+			let recorder = Arc::new(Recorder::default());
+			let err = launch(
+				l.clone(),
+				id.clone(),
+				None,
+				recorder.clone(),
+				|| async move { Err(AppError::new(code)) },
+			)
+			.await
+			.unwrap_err();
+			assert_eq!(err.code, code);
+
+			let events = recorder.0.lock().unwrap();
+			let states: Vec<_> = events.iter().map(|e| e.state).collect();
+			assert_eq!(states, [ProcessState::Starting, ProcessState::Exited]);
+			assert_eq!(events[0].account, None);
+			assert_eq!(events[1].account, None);
+			assert_eq!(events[1].error.as_ref().map(|e| e.code), Some(code));
+			assert!(!l.instances.is_running(&id));
+		}
 	}
 }

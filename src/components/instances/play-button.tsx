@@ -2,6 +2,7 @@ import { Download, LoaderCircle, Play, RotateCcw, Square, X } from "lucide-react
 import { AnimatePresence, motion } from "motion/react";
 import { useLayoutEffect, useRef, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useShownGameAccount } from "@/components/instances/instance-text";
 import { ProgressBar } from "@/components/instances/progress-bar";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -48,6 +49,10 @@ export function PlayButton({
 	const containerRef = useRef<HTMLDivElement>(null);
 	const cancelling = Boolean(store.cancelling[instance.id]);
 	const name = instance.name;
+	const gameAccount = useShownGameAccount(instance.id, store);
+	const stopLabel = gameAccount
+		? t("instances.card.aria.stopAs", { name, nick: gameAccount.username })
+		: t("instances.card.aria.stop", { name });
 
 	// Кнопка пересоздаётся при смене состояния: переносим фокус на новую, иначе он уйдёт на body.
 	useLayoutEffect(() => {
@@ -144,7 +149,7 @@ export function PlayButton({
 				return (
 					<button
 						type="button"
-						aria-label={t("instances.card.aria.stop", { name })}
+						aria-label={stopLabel}
 						className={cn(base, onCoverStop)}
 						onClick={stop}
 					>
@@ -225,6 +230,7 @@ export function PlayButton({
 				return (
 					<button
 						type="button"
+						aria-label={gameAccount ? stopLabel : undefined}
 						className={cn(onCoverButton, onCoverStop, "z-10 h-11 px-6 text-[15px]")}
 						onClick={stop}
 					>
@@ -322,7 +328,7 @@ export function PlayButton({
 					<Button
 						className={cn(base, stopHover)}
 						variant="outline"
-						aria-label={row ? t("instances.card.aria.stop", { name }) : t("instance.stop")}
+						aria-label={row || gameAccount ? stopLabel : t("instance.stop")}
 						onClick={stop}
 					>
 						<Square />
