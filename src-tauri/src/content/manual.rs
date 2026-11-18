@@ -799,6 +799,7 @@ pub async fn place(l: &Launcher, id: &str, file: &ManualFile, src: &Path) -> Res
 				icon_url: file.icon_url.clone(),
 				version_number: Some(file.version_number.clone()),
 				author: file.author.clone(),
+				slug: None,
 			});
 			entry.dependency = file.dependency;
 			entry.update = None;

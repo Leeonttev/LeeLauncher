@@ -23,6 +23,7 @@ const COMMANDS: &[&str] = &[
 	"java_pick_file",
 	"java_install",
 	"java_install_cancel",
+	"java_update",
 	"settings_get",
 	"settings_update",
 	"system_memory",
@@ -102,6 +103,7 @@ const COMMANDS: &[&str] = &[
 	"app_launch_lang",
 	"app_set_lang",
 	"discord_status",
+	"app_quit",
 ];
 
 fn main() {

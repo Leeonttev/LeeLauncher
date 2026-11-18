@@ -91,6 +91,11 @@ export function formatPercent(value: number): string {
 	return new Intl.NumberFormat(lang(), { style: "percent", maximumFractionDigits: 0 }).format(value / 100);
 }
 
+/** «Modrinth и CurseForge». */
+export function formatList(items: string[]): string {
+	return new Intl.ListFormat(lang(), { type: "conjunction" }).format(items);
+}
+
 export function formatNumber(value: number): string {
 	return new Intl.NumberFormat(lang()).format(value);
 }

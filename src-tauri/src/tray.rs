@@ -21,6 +21,11 @@ const MENU_QUIT: &str = "quit";
 const WAIT_POLL: Duration = Duration::from_secs(2);
 /// Окно спрятано в трей.
 pub const EVENT_HIDDEN: &str = "app-hidden-to-tray";
+/// «Выйти» из трея, пока идут игры: интерфейс спрашивает, закрыть ли их (`app_quit`).
+pub const EVENT_QUIT_REQUESTED: &str = "app-quit-requested";
+/// Сколько ждать, пока остановленные игры закроются, перед выходом.
+const QUIT_WAIT: Duration = Duration::from_secs(8);
+const QUIT_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub struct Tray {
@@ -37,6 +42,13 @@ pub struct Tray {
 struct Hidden {
 	/// Окно прячется в трей впервые за этот запуск лаунчера.
 	first: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuitRequested {
+	/// Сколько игр запускается или идёт.
+	games: usize,
 }
 
 struct Texts {
@@ -194,11 +206,54 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) {
 	}
 }
 
-/// «Выйти» из трея: игра продолжает работать сама по себе.
+/// «Выйти» из трея. Идут игры — показываем окно: интерфейс спросит, закрыть ли их.
 fn quit<R: Runtime>(app: &AppHandle<R>) {
-	log::info!("выход из трея, игра остаётся запущенной");
-	remove_icon(app);
+	let games = app
+		.try_state::<Arc<Launcher>>()
+		.map(|l| {
+			let running = l.games.running().len();
+			if running == 0 && l.instances.any_running() {
+				1
+			} else {
+				running
+			}
+		})
+		.unwrap_or(0);
+	if games == 0 {
+		log::info!("выход из трея");
+		remove_icon(app);
+		app.exit(0);
+		return;
+	}
+	log::info!("выход из трея: идут игры ({games}), спрашиваем");
+	show(app);
+	if let Err(err) = app.emit(EVENT_QUIT_REQUESTED, QuitRequested { games }) {
+		log::warn!("не удалось отправить {EVENT_QUIT_REQUESTED}: {err}");
+	}
+}
+
+/// Выход из лаунчера: сначала останавливает все игры (с потомками) и ждёт их конца,
+/// чтобы записалось время игры.
+#[tauri::command]
+pub async fn app_quit(app: AppHandle) -> Result<(), crate::error::AppError> {
+	if let Some(l) = app.try_state::<Arc<Launcher>>() {
+		let l = l.inner().clone();
+		let stopped = l.instances.kill_all();
+		if stopped > 0 {
+			log::info!("выход: останавливаем игры ({stopped})");
+			let deadline = tokio::time::Instant::now() + QUIT_WAIT;
+			while l.game_running() && tokio::time::Instant::now() < deadline {
+				tokio::time::sleep(QUIT_POLL).await;
+			}
+			if l.game_running() {
+				log::warn!("выход: игры не закрылись за {QUIT_WAIT:?}");
+			}
+		}
+	}
+	log::info!("выход по просьбе пользователя");
+	remove_icon(&app);
 	app.exit(0);
+	Ok(())
 }
 
 /// Игра закрылась. Вылет или ошибка запуска — показываем окно, чтобы было видно, что случилось;

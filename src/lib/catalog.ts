@@ -61,6 +61,36 @@ const SORT_KEY = "catalog-sort";
 const INSTANCE_KEY = "catalog-instance";
 const SOURCE_KEY = "catalog-source";
 
+/** Свой предел на случай, если ядро не ответит: дольше ждать нет смысла. */
+export const CATALOG_DEADLINE = 20_000;
+/** С этого момента под скелетоном — «отвечает долго». */
+export const SLOW_AFTER = 4_000;
+
+/** Ответ ядра или `source_unavailable` с `details: "timeout"` через `ms`. */
+export function withDeadline<T>(promise: Promise<T>, ms = CATALOG_DEADLINE): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject({ code: "source_unavailable", message: "", details: "timeout" } satisfies AppError),
+			ms,
+		);
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(err: unknown) => {
+				clearTimeout(timer);
+				reject(err);
+			},
+		);
+	});
+}
+
+/** Не удалось связаться с источником: сеть, сбой источника или истёк предел. */
+export function isUnreachable(error: AppError): boolean {
+	return error.code === "network" || error.code === "source_unavailable";
+}
+
 /* Возможности источников */
 
 /** До ответа ядра: один источник по умолчанию с общими возможностями. */
@@ -466,7 +496,9 @@ export async function searchCatalog(params: SearchParams, force = false) {
 	const seq = ++requestSeq;
 	setResults({ status: "loading", key, error: null, moreError: null, loadingMore: false });
 	try {
-		const result = await catalogApi.search(params.source === "all" ? params : { ...params, offset: 0 });
+		const result = await withDeadline(
+			catalogApi.search(params.source === "all" ? params : { ...params, offset: 0 }),
+		);
 		if (seq !== requestSeq) return;
 		setResults({
 			status: "ready",
@@ -513,10 +545,12 @@ export async function loadMoreCatalog(params: SearchParams) {
 	const seq = requestSeq;
 	setResults({ loadingMore: true, moreError: null });
 	try {
-		const result = await catalogApi.search(
-			all
-				? { ...params, cursor: results.cursor ?? undefined }
-				: { ...params, offset: results.hits.length },
+		const result = await withDeadline(
+			catalogApi.search(
+				all
+					? { ...params, cursor: results.cursor ?? undefined }
+					: { ...params, offset: results.hits.length },
+			),
 		);
 		if (seq !== requestSeq || state.results.hitsKey !== results.hitsKey) return;
 		// Проекты могут сдвинуться между порциями — убираем повторы.
@@ -572,8 +606,7 @@ export function loadCategories(type: CatalogType, source: ContentSource, force =
 	const entry = categories[key];
 	if (!force && entry && entry.status !== "error") return;
 	setCategories(key, { status: "loading" });
-	catalogApi
-		.categories(type, source)
+	withDeadline(catalogApi.categories(type, source))
 		.then((items) => setCategories(key, { status: "ready", items }))
 		.catch((err: unknown) => setCategories(key, { status: "error", error: toAppError(err) }));
 }

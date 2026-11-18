@@ -1,9 +1,10 @@
-import { ExternalLink } from "lucide-react";
-import { useState } from "react";
+import { ExternalLink, ImageOff } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ImageViewer, ViewerButton } from "@/components/image-viewer";
 import { PixelGrid } from "@/components/pixel-grid";
+import { useImageDeadline } from "@/hooks/use-image-deadline";
 import { external, type Project } from "@/lib/api";
 import { i18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -64,22 +65,38 @@ function Thumb({
 	label: string;
 	onOpen: (target: HTMLElement) => void;
 }) {
+	const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+	const ref = useRef<HTMLButtonElement>(null);
+	const giveUp = useCallback(() => setState((s) => (s === "loading" ? "error" : s)), []);
+	useImageDeadline(ref, state === "loading", giveUp);
 	return (
 		<button
+			ref={ref}
 			type="button"
 			aria-label={label}
 			className={cn(thumbClass)}
 			onClick={(e) => onOpen(e.currentTarget)}
 		>
-			<img
-				src={image.thumbUrl || image.url}
-				alt=""
-				loading="lazy"
-				decoding="async"
-				referrerPolicy="no-referrer"
-				draggable={false}
-				className="size-full object-cover"
-			/>
+			{state === "error" ? (
+				<span className="flex size-full items-center justify-center text-muted-foreground">
+					<ImageOff className="size-6" />
+				</span>
+			) : (
+				<img
+					src={image.thumbUrl || image.url}
+					alt=""
+					loading="lazy"
+					decoding="async"
+					referrerPolicy="no-referrer"
+					draggable={false}
+					className={cn(
+						"size-full object-cover transition-opacity duration-(--duration-base)",
+						state === "loading" && "opacity-0",
+					)}
+					onLoad={() => setState("ready")}
+					onError={() => setState("error")}
+				/>
+			)}
 		</button>
 	);
 }

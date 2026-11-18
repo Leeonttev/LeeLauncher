@@ -73,6 +73,7 @@ pub async fn instance_launch(
 			})
 	};
 	super::launch(l.inner().clone(), id, world, events, credentials).await?;
+	crate::java::runtime::refresh_index_soon(l.inner().clone());
 	Ok(())
 }
 
@@ -93,6 +94,15 @@ async fn check_world(l: &Launcher, id: &str, world: &str) -> Result<(), AppError
 		));
 	}
 	Ok(())
+}
+
+/// Находит игры, пережившие прошлый экземпляр лаунчера (вызывается при старте).
+pub async fn recover(app: AppHandle, l: Arc<Launcher>) {
+	let events: Arc<dyn GameEvents> = Arc::new(TauriGameEvents(app));
+	let count = super::recover(&l, events).await;
+	if count > 0 {
+		log::info!("найдено игр с прошлого запуска: {count}");
+	}
 }
 
 #[tauri::command]

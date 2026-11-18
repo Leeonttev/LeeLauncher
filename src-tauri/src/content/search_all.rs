@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -32,6 +33,8 @@ const MAX_FETCHES: u32 = 4;
 const MAX_SKIP: usize = 256;
 const MAX_CURSOR_LEN: usize = 8 * 1024;
 const CURSOR_VERSION: u32 = 1;
+/// Сколько ждём каждый каталог за порцию: не ответил — его строки в этот раз пропускаются.
+pub const LANE_DEADLINE: Duration = Duration::from_secs(8);
 
 /// Строка результата: проект и его двойники в других каталогах.
 pub struct Row {
@@ -104,7 +107,7 @@ fn decode(text: &str) -> Result<Cursor, AppError> {
 }
 
 /// Строка для сравнения: нижний регистр, только буквы и цифры.
-fn norm(text: &str) -> String {
+pub(crate) fn norm(text: &str) -> String {
 	text.chars()
 		.filter(|c| c.is_alphanumeric())
 		.flat_map(char::to_lowercase)
@@ -169,12 +172,16 @@ async fn fetch_page(
 	kind: SourceKind,
 	offset: u32,
 	limit: u32,
+	deadline: tokio::time::Instant,
 ) -> Result<SearchPage, AppError> {
 	query.source = kind;
 	query.offset = offset;
 	query.limit = Some(limit);
 	query.categories.clear();
-	source.search(&query).await
+	// Срок полосы не продлевается: очередь к каталогу в нём, но пауза лимита дольше остатка —
+	// сразу `rate_limited`, а не `timeout`.
+	let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+	super::within_capped(left, Duration::ZERO, source.search(&query)).await
 }
 
 fn absorb(
@@ -221,6 +228,12 @@ fn combined_error(mut errors: Vec<AppError>) -> AppError {
 	if errors.iter().all(|e| e.code == ErrorCode::Network) {
 		return AppError::coded(ErrorCode::Network, "все каталоги: нет соединения");
 	}
+	if errors.iter().all(|e| {
+		e.code == ErrorCode::SourceUnavailable
+			&& e.details.as_deref() == Some(super::TIMEOUT_DETAILS)
+	}) {
+		return super::timed_out();
+	}
 	let details: Vec<String> = errors
 		.iter()
 		.map(|e| format!("{:?}: {}", e.code, e.message))
@@ -251,7 +264,17 @@ pub async fn search(
 	query: &SearchQuery,
 	cursor: Option<&str>,
 ) -> Result<AllPage, AppError> {
+	search_within(sources, query, cursor, LANE_DEADLINE).await
+}
+
+async fn search_within(
+	sources: Vec<(SourceKind, Arc<dyn ContentSource>)>,
+	query: &SearchQuery,
+	cursor: Option<&str>,
+	lane_deadline: Duration,
+) -> Result<AllPage, AppError> {
 	check_query(query)?;
+	let deadline = tokio::time::Instant::now() + lane_deadline;
 	let limit = query
 		.limit
 		.unwrap_or(SEARCH_LIMIT_DEFAULT)
@@ -299,6 +322,7 @@ pub async fn search(
 				lane.state.source,
 				lane.fetched,
 				window,
+				deadline,
 			);
 			set.spawn(async move { (i, fut.await) });
 		}
@@ -326,6 +350,7 @@ pub async fn search(
 					lane.state.source,
 					lane.fetched,
 					window,
+					deadline,
 				)
 				.await;
 				absorb(lane, result, &mut partial);
@@ -448,6 +473,7 @@ mod tests {
 		kind: SourceKind,
 		hits: Vec<ProjectHit>,
 		fail: Option<ErrorCode>,
+		hang: bool,
 		calls: Mutex<u32>,
 	}
 
@@ -457,6 +483,7 @@ mod tests {
 				kind,
 				hits,
 				fail: None,
+				hang: false,
 				calls: Mutex::new(0),
 			})
 		}
@@ -465,6 +492,16 @@ mod tests {
 				kind,
 				hits: Vec::new(),
 				fail: Some(code),
+				hang: false,
+				calls: Mutex::new(0),
+			})
+		}
+		fn hanging(kind: SourceKind) -> Arc<Self> {
+			Arc::new(Self {
+				kind,
+				hits: Vec::new(),
+				fail: None,
+				hang: true,
 				calls: Mutex::new(0),
 			})
 		}
@@ -481,6 +518,9 @@ mod tests {
 					*c += 1;
 				}
 				assert_eq!(q.source, self.kind);
+				if self.hang {
+					std::future::pending::<()>().await;
+				}
 				if let Some(code) = self.fail {
 					return Err(AppError::coded(code, "fake"));
 				}
@@ -758,6 +798,45 @@ mod tests {
 		assert_eq!(page.partial[0].source, CF);
 		// Упавший каталог спросим снова со следующей порции.
 		assert!(page.cursor.is_some());
+	}
+
+	#[tokio::test]
+	async fn silent_source_is_skipped() {
+		let mr = Fake::new(MR, mr_list(3));
+		let started = std::time::Instant::now();
+		let page = search_within(
+			pair(mr, Fake::hanging(CF)),
+			&query(SearchSort::Downloads, 10),
+			None,
+			Duration::from_millis(300),
+		)
+		.await
+		.unwrap_or_else(|e| panic!("{e:?}"));
+		assert!(started.elapsed() < Duration::from_secs(2));
+		assert_eq!(ids(&page.rows), ["m0", "m1", "m2"]);
+		assert_eq!(page.partial.len(), 1);
+		assert_eq!(page.partial[0].source, CF);
+		assert_eq!(
+			page.partial[0].error.details.as_deref(),
+			Some(crate::content::TIMEOUT_DETAILS)
+		);
+
+		let err = search_within(
+			pair(Fake::hanging(MR), Fake::hanging(CF)),
+			&query(SearchSort::Relevance, 10),
+			None,
+			Duration::from_millis(300),
+		)
+		.await
+		.err()
+		.map(|e| (e.code, e.details));
+		assert_eq!(
+			err,
+			Some((
+				ErrorCode::SourceUnavailable,
+				Some(crate::content::TIMEOUT_DETAILS.to_owned())
+			))
+		);
 	}
 
 	#[tokio::test]

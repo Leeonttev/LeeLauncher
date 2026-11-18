@@ -58,6 +58,11 @@ impl Layout {
 		Self { root }
 	}
 
+	/// Запущенные игры (на случай перезапуска лаунчера во время игры).
+	pub fn running_file(&self) -> PathBuf {
+		self.root.join("running.json")
+	}
+
 	pub fn settings_file(&self) -> PathBuf {
 		self.root.join("settings.json")
 	}

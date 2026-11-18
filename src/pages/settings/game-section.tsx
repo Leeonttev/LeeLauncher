@@ -1,5 +1,5 @@
 import { FolderOpen, LoaderCircle, OctagonX, RefreshCw } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { JavaSelect } from "@/components/instances/java-select";
 import { MemoryField } from "@/components/instances/memory-field";
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import type { JavaInstall } from "@/lib/api";
+import { useDownloads } from "@/lib/downloads";
 import { errorText } from "@/lib/errors";
 import { formatMemory } from "@/lib/format";
 import {
@@ -15,6 +16,7 @@ import {
 	openAppFolder,
 	reloadSettings,
 	rescanJava,
+	updateJava,
 	updateSettings,
 	useGameSettings,
 } from "@/lib/game-settings";
@@ -48,6 +50,7 @@ export function GameSection() {
 			<div className="mt-2 divide-y divide-border">
 				<MemoryRow />
 				<JavaRows />
+				<Java4ShellRow />
 				<SameAccountRow />
 				<DataFolderRow />
 			</div>
@@ -150,21 +153,52 @@ function JavaMajorRow({
 			: t("settings.game.java.statusPending");
 	}
 
+	const update = installs.find((java) => java.managed && java.major === major && java.updateAvailable);
+	const updating = useDownloads().items.some(
+		(task) =>
+			task.kind === "java" &&
+			task.javaMajor === major &&
+			(task.state === "queued" || task.state === "running"),
+	);
+
 	return (
 		<div className="flex items-center gap-4 py-3">
 			<div className="w-44 shrink-0">
 				<p className="text-sm/5 font-medium">{label}</p>
 				<p className="text-xs/4 text-muted-foreground">{t(`settings.game.java.for${major}`)}</p>
 			</div>
-			<p
-				className={cn(
-					"flex min-w-0 flex-1 items-center gap-1.5 text-[13px]/[18px]",
-					missing ? "text-destructive" : "text-muted-foreground",
+			<div className="min-w-0 flex-1">
+				<p
+					className={cn(
+						"flex items-center gap-1.5 text-[13px]/[18px]",
+						missing ? "text-destructive" : "text-muted-foreground",
+					)}
+				>
+					{missing && <OctagonX className="shrink-0" />}
+					<span className="truncate">{status}</span>
+				</p>
+				{update?.updateAvailable && (
+					<p className="truncate text-xs/4 text-primary-text">
+						{t("settings.game.java.updateAvailable", { version: update.updateAvailable })}
+					</p>
 				)}
-			>
-				{missing && <OctagonX className="shrink-0" />}
-				<span className="truncate">{status}</span>
-			</p>
+			</div>
+			{update && (
+				<Button
+					variant="outline"
+					size="sm"
+					aria-disabled={updating || undefined}
+					aria-label={
+						updating
+							? t("settings.game.java.updatingLabel", { major })
+							: t("settings.game.java.updateLabel", { major })
+					}
+					onClick={() => !updating && void updateJava(major)}
+				>
+					{updating ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+					{updating ? t("settings.game.java.updating") : t("settings.game.java.update")}
+				</Button>
+			)}
 			<JavaSelect
 				value={path}
 				installs={installs}
@@ -176,6 +210,32 @@ function JavaMajorRow({
 				onChange={(next) => void updateSettings({ javaPaths: { [String(major)]: next } })}
 			/>
 		</div>
+	);
+}
+
+function Java4ShellRow() {
+	const { t } = useTranslation();
+	const settings = useGameSettings().settings;
+	const [saving, setSaving] = useState(false);
+	const checked = settings.value?.java4shellMitigation ?? true;
+	return (
+		<SettingRow
+			inline
+			htmlFor="settings-java4shell"
+			title={t("settings.game.java4shell.title")}
+			description={t("settings.game.java4shell.description")}
+		>
+			<Switch
+				id="settings-java4shell"
+				checked={checked}
+				disabled={settings.status !== "ready"}
+				onCheckedChange={(next) => {
+					if (saving) return;
+					setSaving(true);
+					void updateSettings({ java4shellMitigation: next }).finally(() => setSaving(false));
+				}}
+			/>
+		</SettingRow>
 	);
 }
 

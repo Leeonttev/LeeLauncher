@@ -73,6 +73,7 @@ async fn live_content_modrinth() {
 		&instance,
 		&game_dir,
 		&Default::default(),
+		&HashMap::new(),
 		&request,
 	)
 	.await
@@ -93,9 +94,16 @@ async fn live_content_modrinth() {
 	let request: InstallRequest =
 		serde_json::from_value(serde_json::json!({ "projectId": "sodium-extra" })).unwrap();
 	let mut index = installed::Index::default();
-	let plan = install::resolve(source.as_ref(), &instance, &game_dir, &index, &request)
-		.await
-		.unwrap();
+	let plan = install::resolve(
+		source.as_ref(),
+		&instance,
+		&game_dir,
+		&index,
+		&HashMap::new(),
+		&request,
+	)
+	.await
+	.unwrap();
 	let items = plan.items();
 	println!(
 		"modmenu: {:?}",
@@ -235,9 +243,16 @@ async fn live_curseforge_content() {
 	}))
 	.unwrap();
 	let mut index = installed::Index::default();
-	let plan = install::resolve(source.as_ref(), &instance, &game_dir, &index, &request)
-		.await
-		.unwrap();
+	let plan = install::resolve(
+		source.as_ref(),
+		&instance,
+		&game_dir,
+		&index,
+		&HashMap::new(),
+		&request,
+	)
+	.await
+	.unwrap();
 	let items = plan.items();
 	println!(
 		"план: {:?}, вручную {}",

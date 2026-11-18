@@ -253,6 +253,18 @@ export const en: Translation = {
 				statusFound: "Found on this computer · {version}",
 				statusMissing: "File not found — automatic Java will be used",
 				wrongMajor: "This is Java {found}, but Java {major} is needed here",
+				updateAvailable: "{version} available",
+				update: "Update",
+				updating: "Updating…",
+				updateLabel: "Update Java {major}",
+				updatingLabel: "Updating Java {major}…",
+				updateInUse: "A game is using this Java right now. Close the game and click Update again",
+				updateLocked: "Java is busy right now. Try again in a minute",
+			},
+			java4shell: {
+				title: "Java4Shell protection",
+				description:
+					"For Java 17 and newer, adds arguments that turn off the vulnerable part (CVE-2026-114938). Turn it off only if you know your Java is already patched",
 			},
 			dataFolder: {
 				title: "Data folder",
@@ -421,6 +433,7 @@ export const en: Translation = {
 		empty: {
 			title: "No instances yet",
 			description: "Pick a game version and mod loader — the launcher will download everything for you",
+			dropHint: "or drop a modpack file into the window",
 		},
 		filter: {
 			label: "Mod loader",
@@ -550,6 +563,7 @@ export const en: Translation = {
 				incompatible: "Not compatible with {version}",
 				browse: "Browse…",
 				customPath: "Custom file",
+				searching: "Looking for Java…",
 			},
 			resolution: {
 				title: "Window size",
@@ -749,6 +763,15 @@ export const en: Translation = {
 		volcano: "Volcano",
 		cosmos: "Space",
 	},
+	quit: {
+		title: "Quit LeeLauncher?",
+		description_one: "{count} running game will close. Unsaved progress in your world may be lost",
+		description_other: "{count} running games will close. Unsaved progress in your world may be lost",
+		descriptionNamed: "{name} will close. Unsaved progress in your world may be lost",
+		descriptionNamedAs: "{name} played as {nick} will close. Unsaved progress in your world may be lost",
+		confirm: "Quit and close games",
+		closing: "Closing games…",
+	},
 	tray: {
 		hidden: {
 			title: "LeeLauncher kept running in the tray",
@@ -906,7 +929,14 @@ export const en: Translation = {
 		},
 		found: "{count} found",
 		foundApprox: "About {count} found",
-		partial: "{source} didn't respond — showing results from {other}",
+		partial: "{source} is unavailable right now — showing results from {other} only",
+		partialNone: "{source} is unavailable right now",
+		partialNoneMany: "{sources} are unavailable right now",
+		slow: {
+			one: "{source} is taking a while to respond…",
+			all: "The catalogs are taking a while to respond…",
+			openAll: "Search all",
+		},
 		end: "That's all · {count}",
 		tooFar: "Refine your search to see more",
 		offlineCached: "Offline: showing saved results",
@@ -928,6 +958,9 @@ export const en: Translation = {
 			offlineTitle: "No connection",
 			offlineDescription: "The catalog loads from the internet. Check your connection and try again",
 			sourceTitle: "{source} isn't responding",
+			unreachableTitle: "Can't reach {source}",
+			unreachableDescription:
+				"The site may be blocked on your network or by your provider. Check your connection and try again later, or use a VPN",
 			title: "Couldn't load the catalog",
 			openSource: "Open {source}",
 			disabledTitle: "{source} isn't available",
@@ -984,6 +1017,8 @@ export const en: Translation = {
 			description: "We'll also install what it needs to work",
 			required: "Required · will be installed",
 			requiredInstalled: "Required · installed",
+			installedFrom: "Already installed · from {source}",
+			installedFile: "Already installed · added as a file",
 			optional: "Recommended",
 			conflict: "Incompatible with {name} — it will be turned off",
 			missing: "No compatible version found: {name}",
@@ -1296,6 +1331,25 @@ export const en: Translation = {
 		},
 		gameRunning: "Close the game to change installed content",
 		offline: "Offline: updates not checked",
+		sourceUnreachable: "{source} is unavailable: its updates weren't checked",
+		sourcesUnreachable: "{sources} are unavailable: their updates weren't checked",
+		sourcesTimeout: "The catalog sites didn't respond in time: updates weren't checked",
+		updatesFailed: "Couldn't check for updates: {error}",
+		updateSkipped: "{source} is unavailable: its updates weren't installed",
+		updateSkippedMany: "{sources} are unavailable: their updates weren't installed",
+		sourceCovered_one: "{source} is unavailable — {count} file checked via {via}",
+		sourceCovered_other: "{source} is unavailable — {count} files checked via {via}",
+		sourceCoveredPartial_one:
+			"{source} is unavailable — {count} file checked via {via}, the rest weren't checked",
+		sourceCoveredPartial_other:
+			"{source} is unavailable — {count} files checked via {via}, the rest weren't checked",
+		updateCoveredPartial_one:
+			"{source} is unavailable — {count} file checked via {via}, the rest weren't updated",
+		updateCoveredPartial_other:
+			"{source} is unavailable — {count} files checked via {via}, the rest weren't updated",
+		updateVia: "from {source}",
+		updateViaHint:
+			"Update found on {via}: {source} is unavailable right now. After updating, the mod will get updates from {via}",
 		empty: {
 			title: "Nothing here yet",
 			description: "Add mods, shaders or resource packs from Catalog — or drop files into the window",
@@ -1368,6 +1422,8 @@ export const en: Translation = {
 		folder: "Logs folder",
 		running_one: "Game running · {duration} · {count} line",
 		running_other: "Game running · {duration} · {count} lines",
+		runningNoLog: "Game running · {duration}",
+		recovered: "The game was started before the launcher restarted, so its log isn't available",
 		last: "Last run · {when} · {duration}",
 		lastShort: "Last run · {when}",
 		crashed: "The game crashed · code {code}",

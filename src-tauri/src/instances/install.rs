@@ -206,12 +206,18 @@ pub async fn resolve_java(
 	.await?
 	{
 		log::info!("Java {major}: {}", found.path);
+		if found.managed
+			&& let Some(updated) = update_java(l, &found, progress.clone(), cancel).await?
+		{
+			return Ok(updated);
+		}
 		return Ok(found);
 	}
 	let _guard = tokio::select! {
 		_ = cancel.cancelled() => return Err(AppError::new(ErrorCode::Cancelled)),
 		g = l.java_lock.lock() => g,
 	};
+	let in_use = |dir: &std::path::Path| l.games.java_in_use(dir);
 	let java = java::runtime::install(
 		&l.meta,
 		&l.dl,
@@ -220,10 +226,68 @@ pub async fn resolve_java(
 		major,
 		progress,
 		cancel,
+		&in_use,
 	)
 	.await?;
 	l.java_found.invalidate().await;
 	Ok(java)
+}
+
+/// Скачанная нами Java устарела — ставим новую версию на её место. Пока ею пользуется игра,
+/// обновление откладывается; сбой обновления не мешает установке сборки.
+async fn update_java(
+	l: &Launcher,
+	found: &JavaInstall,
+	progress: Arc<Progress>,
+	cancel: &CancellationToken,
+) -> Result<Option<JavaInstall>, AppError> {
+	let managed_root = l.layout.java_dir();
+	let Some(home) = java::runtime::home_of(&found.path, &managed_root) else {
+		return Ok(None);
+	};
+	let Some(version) = java::runtime::update_available(&l.meta, &home, cancel).await else {
+		return Ok(None);
+	};
+	if l.games.java_in_use(&home) {
+		log::info!(
+			"Java {} → {version}: идёт игра на этой Java, обновим позже",
+			found.version
+		);
+		return Ok(None);
+	}
+	let Some(marker) = java::runtime::marker(&home) else {
+		return Ok(None);
+	};
+	let _guard = tokio::select! {
+		_ = cancel.cancelled() => return Err(AppError::new(ErrorCode::Cancelled)),
+		g = l.java_lock.lock() => g,
+	};
+	log::info!("Java {} → {version}: обновляем", found.version);
+	let in_use = |dir: &std::path::Path| l.games.java_in_use(dir);
+	let result = java::runtime::install(
+		&l.meta,
+		&l.dl,
+		&managed_root,
+		Some(&marker.component),
+		found.major,
+		progress,
+		cancel,
+		&in_use,
+	)
+	.await;
+	l.java_found.invalidate().await;
+	match result {
+		Ok(java) => Ok(Some(java)),
+		Err(err) if err.code == ErrorCode::Cancelled => Err(err),
+		Err(err) => {
+			log::warn!(
+				"Java {}: обновление не удалось ({:?}), берём прежнюю",
+				found.version,
+				err.code
+			);
+			Ok(None)
+		}
+	}
 }
 
 /// Natives старого формата: jar и что из него не распаковывать.

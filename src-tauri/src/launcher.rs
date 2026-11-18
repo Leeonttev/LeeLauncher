@@ -109,6 +109,7 @@ impl Launcher {
 		dl.set_source(settings.get().download_source);
 		let instances = Instances::load(layout.clone());
 		spawn_cleanup(&layout, instances.take_leftovers());
+		let running_file = layout.running_file();
 		Ok(Arc::new(Self {
 			meta: Meta::new(layout.clone(), dl.clone()),
 			instances,
@@ -118,7 +119,7 @@ impl Launcher {
 			install_lock: Mutex::new(()),
 			java_lock: Mutex::new(()),
 			java_installs: std::sync::Mutex::new(HashMap::new()),
-			games: Games::default(),
+			games: Games::new(Some(running_file)),
 			java_found: JavaCache::default(),
 			downloads: Arc::default(),
 			sources: Sources::new(modrinth, curseforge),
@@ -173,6 +174,7 @@ const THUMBS_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 *
 /// Дочистка после прошлого запуска, в фоне.
 fn spawn_cleanup(layout: &Layout, leftovers: Vec<std::path::PathBuf>) {
 	let roots = [layout.meta_dir(), layout.java_dir()];
+	let java_dir = layout.java_dir();
 	let thumbs = layout.thumbs_dir();
 	let instances_dir = layout.instances_dir();
 	let packs_dir = layout.cache_dir().join("modpacks");
@@ -180,6 +182,7 @@ fn spawn_cleanup(layout: &Layout, leftovers: Vec<std::path::PathBuf>) {
 		.name("cleanup".into())
 		.spawn(move || {
 			crate::instances::remove_leftovers(leftovers);
+			crate::java::runtime::cleanup(&java_dir);
 			remove_content_tmp(&instances_dir);
 			crate::modpacks::cleanup(&packs_dir, &instances_dir);
 			let parts = download::remove_stale_parts(&roots, STALE_PARTS_AGE);

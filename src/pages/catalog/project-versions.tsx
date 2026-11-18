@@ -2,6 +2,7 @@ import { ChevronRight, OctagonX, RotateCcw } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { GameVersionPicker } from "@/components/catalog/game-version-picker";
+import { SlowNotice } from "@/components/catalog/slow-notice";
 import { CenteredState } from "@/components/centered-state";
 import { MarkdownView } from "@/components/markdown";
 import { Segments } from "@/components/segments";
@@ -17,7 +18,15 @@ import {
 	type Instance,
 	type VersionChannel,
 } from "@/lib/api";
-import { instanceLoaders, LOADER_FILTER_NAMES, visibleLoaders, type CatalogType } from "@/lib/catalog";
+import {
+	instanceLoaders,
+	isUnreachable,
+	LOADER_FILTER_NAMES,
+	SOURCE_NAMES,
+	visibleLoaders,
+	withDeadline,
+	type CatalogType,
+} from "@/lib/catalog";
 import { errorText, toAppError, type AppError } from "@/lib/errors";
 import { formatAgo, formatBytes, formatCompact } from "@/lib/format";
 import { compareGameVersions, LOADER_NAMES } from "@/lib/loaders";
@@ -120,6 +129,7 @@ export function ProjectVersions({
 	if (versions.status === "loading") {
 		return (
 			<div ref={rootRef} tabIndex={-1} aria-busy className="flex flex-col gap-3 outline-none">
+				<SlowNotice loading source={source} />
 				{Array.from({ length: 6 }, (_, i) => (
 					<Skeleton key={i} className="h-10 w-full rounded-lg" />
 				))}
@@ -135,8 +145,16 @@ export function ProjectVersions({
 					heading="h2"
 					fill={false}
 					className="py-12"
-					title={t("project.versions.failed")}
-					description={errorText(versions.error)}
+					title={
+						isUnreachable(versions.error)
+							? t("catalog.error.unreachableTitle", { source: SOURCE_NAMES[source] })
+							: t("project.versions.failed")
+					}
+					description={
+						isUnreachable(versions.error)
+							? t("catalog.error.unreachableDescription")
+							: errorText(versions.error)
+					}
 					action={
 						<Button
 							ref={retryRef}
@@ -338,8 +356,7 @@ function VersionDetails({ version, source }: { version: ContentVersion; source: 
 
 	useEffect(() => {
 		let alive = true;
-		catalogApi
-			.version(version.id, source)
+		withDeadline(catalogApi.version(version.id, source))
 			.then((value) => alive && setFull({ status: "ready", value }))
 			.catch((err: unknown) => alive && setFull({ status: "error", error: toAppError(err) }));
 		return () => {

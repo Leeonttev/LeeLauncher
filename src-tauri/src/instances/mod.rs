@@ -874,6 +874,21 @@ impl Instances {
 			.unwrap_or(false)
 	}
 
+	/// Останавливает все игры. Возвращает, сколько их было.
+	pub fn kill_all(&self) -> usize {
+		let Ok(tasks) = self.tasks.lock() else {
+			return 0;
+		};
+		let mut count = 0;
+		for activity in tasks.values() {
+			if let Activity::Run(token) = activity {
+				token.cancel();
+				count += 1;
+			}
+		}
+		count
+	}
+
 	/// Останавливает игру. `true` — игра шла.
 	pub fn kill(&self, id: &str) -> bool {
 		match self.activity(id) {

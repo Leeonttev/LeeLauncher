@@ -7,16 +7,44 @@ pub fn kill_descendants(pid: u32) -> usize {
 	imp::kill_descendants(pid)
 }
 
+/// Время создания процесса (единицы FILETIME). Вместе с PID отличает процесс от повторно выданного номера.
+pub fn created(pid: u32) -> Option<u64> {
+	imp::created(pid)
+}
+
+/// Процесс игры, за которым следим после перезапуска лаунчера. Открытый дескриптор
+/// не даёт системе выдать этот PID другому процессу.
+pub struct Watched(imp::Watched);
+
+impl Watched {
+	/// `None` — процесса нет или под этим PID уже другой процесс.
+	pub fn open(pid: u32, created: u64) -> Option<Self> {
+		imp::Watched::open(pid, created).map(Self)
+	}
+
+	/// `None` — процесс работает, иначе его код выхода (если известен).
+	pub fn exit_code(&self) -> Option<Option<i32>> {
+		self.0.exit_code()
+	}
+
+	/// Останавливает процесс вместе с потомками и ждёт его конца (не больше пары секунд).
+	pub fn kill(&self) {
+		self.0.kill()
+	}
+}
+
 #[cfg(windows)]
 mod imp {
-	use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
+	use windows_sys::Win32::Foundation::{
+		CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+	};
 	use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 		CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
 		TH32CS_SNAPPROCESS,
 	};
 	use windows_sys::Win32::System::Threading::{
-		GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-		PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+		GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+		PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 	};
 
 	/// Сколько раз обходить дерево: потомок мог успеть запустить ещё один процесс.
@@ -24,6 +52,11 @@ mod imp {
 	const WAIT_MS: u32 = 2000;
 
 	struct Handle(HANDLE);
+
+	// SAFETY: дескриптор процесса — объект ядра, им можно пользоваться из любого потока.
+	unsafe impl Send for Handle {}
+	// SAFETY: то же; вызовы с ним не меняют сам дескриптор.
+	unsafe impl Sync for Handle {}
 
 	impl Drop for Handle {
 		fn drop(&mut self) {
@@ -148,10 +181,43 @@ mod imp {
 		killed
 	}
 
+	pub fn created(pid: u32) -> Option<u64> {
+		open(pid, PROCESS_QUERY_LIMITED_INFORMATION).map(|p| p.created)
+	}
+
+	pub struct Watched(Proc);
+
+	impl Watched {
+		pub fn open(pid: u32, created: u64) -> Option<Self> {
+			let access =
+				PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+			open(pid, access).filter(|p| p.created == created).map(Self)
+		}
+
+		pub fn exit_code(&self) -> Option<Option<i32>> {
+			// SAFETY: дескриптор открыт с правом SYNCHRONIZE.
+			if unsafe { WaitForSingleObject(self.0.handle.0, 0) } == WAIT_TIMEOUT {
+				return None;
+			}
+			let mut code = 0u32;
+			// SAFETY: дескриптор открыт с правом QUERY_LIMITED_INFORMATION, указатель на локальное значение.
+			let ok = unsafe { GetExitCodeProcess(self.0.handle.0, &mut code) };
+			Some((ok != 0).then_some(code as i32))
+		}
+
+		pub fn kill(&self) {
+			kill_descendants(self.0.pid);
+			// SAFETY: дескриптор открыт с правами TERMINATE и SYNCHRONIZE.
+			unsafe {
+				TerminateProcess(self.0.handle.0, 1);
+				WaitForSingleObject(self.0.handle.0, WAIT_MS);
+			}
+		}
+	}
+
 	/// Процесс ещё работает (для тестов).
 	#[cfg(test)]
 	pub fn is_alive(pid: u32) -> bool {
-		use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 		let Some(proc) = open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE) else {
 			return false;
 		};
@@ -173,6 +239,27 @@ mod imp {
 	/// Игра запускается напрямую `java`, заглушек между ней и лаунчером нет.
 	pub fn kill_descendants(_pid: u32) -> usize {
 		0
+	}
+
+	/// Восстановление после перезапуска лаунчера есть только на Windows.
+	pub fn created(_pid: u32) -> Option<u64> {
+		None
+	}
+
+	pub struct Watched(std::convert::Infallible);
+
+	impl Watched {
+		pub fn open(_pid: u32, _created: u64) -> Option<Self> {
+			None
+		}
+
+		pub fn exit_code(&self) -> Option<Option<i32>> {
+			match self.0 {}
+		}
+
+		pub fn kill(&self) {
+			match self.0 {}
+		}
 	}
 }
 
@@ -213,6 +300,26 @@ mod tests {
 		let status = root.wait().unwrap();
 		assert!(!status.success());
 		assert_eq!(kill_descendants(pid), 0);
+	}
+
+	#[test]
+	fn watches_by_creation_time() {
+		let mut child = Command::new("cmd")
+			.args(["/d", "/c", "ping -n 60 127.0.0.1"])
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap();
+		let pid = child.id();
+		let created = super::created(pid).unwrap();
+		assert!(super::Watched::open(pid, created + 1).is_none());
+		let watched = super::Watched::open(pid, created).unwrap();
+		assert_eq!(watched.exit_code(), None);
+		watched.kill();
+		assert_eq!(watched.exit_code(), Some(Some(1)));
+		let _ = child.wait();
+		assert!(super::created(u32::MAX - 3).is_none());
 	}
 
 	#[test]

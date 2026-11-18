@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { catalogApi, type ContentSource, type ContentVersion, type Project } from "@/lib/api";
+import { withDeadline } from "@/lib/catalog";
 
 export const DEPS_LIMIT = 6;
 
@@ -12,7 +13,7 @@ function loadProject(id: string, source: ContentSource): Promise<Project | null>
 	const key = `${source}:${id}`;
 	let promise = cache.get(key);
 	if (!promise) {
-		promise = catalogApi.project({ id, source }).catch(() => {
+		promise = withDeadline(catalogApi.project({ id, source })).catch(() => {
 			cache.delete(key);
 			return null;
 		});

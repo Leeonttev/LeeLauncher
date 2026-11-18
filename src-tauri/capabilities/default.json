@@ -38,6 +38,7 @@
 		"allow-java-pick-file",
 		"allow-java-install",
 		"allow-java-install-cancel",
+		"allow-java-update",
 		"allow-settings-get",
 		"allow-settings-update",
 		"allow-system-memory",
@@ -111,6 +112,7 @@
 		"allow-app-launch-lang",
 		"allow-app-set-lang",
 		"allow-discord-status",
+		"allow-app-quit",
 		{
 			"identifier": "opener:allow-open-url",
 			"allow": [{ "url": "https://*" }]

@@ -234,17 +234,21 @@ pub async fn run(
 
 		log::info!("процессор {} ({main})", processor.jar);
 		let mut cmd = tokio::process::Command::new(java.console_path());
-		cmd.arg("-cp")
-			.arg(classpath.join(separator))
-			.arg(&main)
-			.args(&args)
-			.current_dir(l.layout.meta_dir())
-			.env_remove("_JAVA_OPTIONS")
-			.env_remove("JAVA_TOOL_OPTIONS")
-			.stdin(Stdio::null())
-			.stdout(Stdio::piped())
-			.stderr(Stdio::piped())
-			.kill_on_drop(true);
+		cmd.args(crate::java::mitigation_args(
+			java.major,
+			l.settings.get().java4shell_mitigation,
+		))
+		.arg("-cp")
+		.arg(classpath.join(separator))
+		.arg(&main)
+		.args(&args)
+		.current_dir(l.layout.meta_dir())
+		.env_remove("_JAVA_OPTIONS")
+		.env_remove("JAVA_TOOL_OPTIONS")
+		.stdin(Stdio::null())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.kill_on_drop(true);
 		#[cfg(windows)]
 		cmd.creation_flags(0x0800_0000);
 		let child = cmd

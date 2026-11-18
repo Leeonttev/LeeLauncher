@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -87,7 +88,7 @@ fn is_loader(name: &str) -> bool {
 pub fn build_client() -> reqwest::Result<reqwest::Client> {
 	reqwest::Client::builder()
 		.user_agent(USER_AGENT)
-		.connect_timeout(Duration::from_secs(15))
+		.connect_timeout(Duration::from_secs(5))
 		.timeout(REQUEST_TIMEOUT)
 		.build()
 }
@@ -114,6 +115,8 @@ pub struct Modrinth {
 	/// Лимит исчерпан до этого момента.
 	blocked_until: Mutex<Option<Instant>>,
 	tags_file: PathBuf,
+	/// Срок одного запроса вместе с повторами.
+	deadline: Duration,
 }
 
 impl Modrinth {
@@ -127,7 +130,14 @@ impl Modrinth {
 			limit: Semaphore::new(CONCURRENCY),
 			blocked_until: Mutex::new(None),
 			tags_file,
+			deadline: super::FETCH_DEADLINE,
 		})
+	}
+
+	#[cfg(test)]
+	pub fn with_deadline(mut self, deadline: Duration) -> Self {
+		self.deadline = deadline;
+		self
 	}
 
 	fn url(&self, segments: &[&str]) -> Url {
@@ -144,7 +154,9 @@ impl Modrinth {
 		if let Some(body) = self.cache.fresh(&key) {
 			return Ok((body, false));
 		}
-		match self.send(&req).await {
+		let connect_failed = AtomicBool::new(false);
+		let sent = self.send(&req, &connect_failed).await;
+		match sent {
 			Ok(body) => {
 				let body = Arc::new(body);
 				self.cache.put(key, ttl, body.clone());
@@ -183,7 +195,7 @@ impl Modrinth {
 			return Ok(());
 		}
 		let wait = until - now;
-		if wait > MAX_RATE_WAIT {
+		if wait > MAX_RATE_WAIT || super::wait_exceeds_command(wait) {
 			return Err(AppError::coded(
 				ErrorCode::RateLimited,
 				format!("modrinth: лимит запросов, ещё {} с", wait.as_secs() + 1),
@@ -213,74 +225,93 @@ impl Modrinth {
 		}
 	}
 
-	async fn send(&self, req: &Request) -> Result<Vec<u8>, AppError> {
-		let _permit = self
-			.limit
-			.acquire()
+	async fn send(&self, req: &Request, connect_failed: &AtomicBool) -> Result<Vec<u8>, AppError> {
+		// Очередь и пауза лимита — вне срока запроса (но в сроке команды, см. `super::within`).
+		let _permit = super::waiting(self.limit.acquire())
 			.await
 			.map_err(|_| AppError::unknown("modrinth: семафор закрыт"))?;
 		let mut network_attempt = 0;
 		let mut waited_429 = false;
+		// Срок — только у отправки и повторов: считается с первой отправки.
+		let mut left = self.deadline;
 		loop {
-			self.wait_rate().await?;
-			let builder = match req {
-				Request::Get(url) => self.client.get(url.clone()),
-				Request::Post(url, body) => self.client.post(url.clone()).json(body),
-			};
-			let resp = match builder.send().await {
-				Ok(resp) => resp,
-				Err(err) => {
-					if (err.is_connect() || err.is_timeout()) && network_attempt < NETWORK_RETRIES {
-						network_attempt += 1;
-						tokio::time::sleep(Duration::from_millis(500 * u64::from(network_attempt)))
-							.await;
-						continue;
+			super::waiting(self.wait_rate()).await?;
+			let started = tokio::time::Instant::now();
+			let step = tokio::time::timeout(left, async {
+				let builder = match req {
+					Request::Get(url) => self.client.get(url.clone()),
+					Request::Post(url, body) => self.client.post(url.clone()).json(body),
+				};
+				let resp = match builder.send().await {
+					Ok(resp) => {
+						connect_failed.store(false, Ordering::Relaxed);
+						resp
 					}
-					return Err(AppError::coded(
-						ErrorCode::Network,
-						format!("modrinth: {}", err.without_url()),
-					));
-				}
-			};
-			let status = resp.status().as_u16();
-			self.note_rate(resp.headers(), status == 429);
-			match status {
-				200..=299 => {
-					return resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+					Err(err) => {
+						if err.is_connect() {
+							connect_failed.store(true, Ordering::Relaxed);
+						}
+						if (err.is_connect() || err.is_timeout())
+							&& network_attempt < NETWORK_RETRIES
+						{
+							network_attempt += 1;
+							tokio::time::sleep(Duration::from_millis(
+								500 * u64::from(network_attempt),
+							))
+							.await;
+							return Ok(None);
+						}
+						return Err(AppError::coded(
+							ErrorCode::Network,
+							format!("modrinth: {}", err.without_url()),
+						));
+					}
+				};
+				let status = resp.status().as_u16();
+				self.note_rate(resp.headers(), status == 429);
+				match status {
+					200..=299 => resp.bytes().await.map(|b| Some(b.to_vec())).map_err(|e| {
 						AppError::coded(
 							ErrorCode::Network,
 							format!("modrinth: {}", e.without_url()),
 						)
-					});
-				}
-				429 if !waited_429 => {
-					waited_429 = true;
-					continue;
-				}
-				429 => {
-					return Err(AppError::coded(
+					}),
+					429 if !waited_429 => {
+						waited_429 = true;
+						Ok(None)
+					}
+					429 => Err(AppError::coded(
 						ErrorCode::RateLimited,
 						"modrinth: HTTP 429",
-					));
-				}
-				404 => {
-					return Err(AppError::coded(
+					)),
+					404 => Err(AppError::coded(
 						ErrorCode::ContentNotFound,
 						format!("modrinth: HTTP 404 {}", resp.url().path()),
-					));
-				}
-				500..=599 | 410 => {
-					return Err(AppError::coded(
+					)),
+					500..=599 | 410 => Err(AppError::coded(
 						ErrorCode::SourceUnavailable,
 						format!("modrinth: HTTP {status}"),
-					));
+					)),
+					_ => {
+						let body = resp.text().await.unwrap_or_default();
+						let body: String = body.chars().take(300).collect();
+						Err(AppError::unknown(format!(
+							"modrinth: HTTP {status}: {body}"
+						)))
+					}
 				}
-				_ => {
-					let body = resp.text().await.unwrap_or_default();
-					let body: String = body.chars().take(300).collect();
-					return Err(AppError::unknown(format!(
-						"modrinth: HTTP {status}: {body}"
-					)));
+			})
+			.await;
+			left = left.saturating_sub(started.elapsed());
+			match step {
+				Ok(Ok(Some(body))) => return Ok(body),
+				Ok(Ok(None)) => {}
+				Ok(Err(err)) => return Err(err),
+				Err(_) => {
+					return Err(super::deadline_error(
+						"modrinth",
+						connect_failed.load(Ordering::Relaxed),
+					));
 				}
 			}
 		}
@@ -1244,6 +1275,80 @@ mod tests {
 		let err = m.version("c").await.unwrap_err();
 		assert_eq!(err.code, ErrorCode::RateLimited);
 		assert_eq!(seen.lock().unwrap().len(), 3);
+	}
+
+	/// Сервер, который принимает соединение и молчит.
+	async fn silent() -> String {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let addr = listener.local_addr().unwrap();
+		tokio::spawn(async move {
+			let mut held = Vec::new();
+			while let Ok((socket, _)) = listener.accept().await {
+				held.push(socket);
+			}
+		});
+		format!("http://{addr}")
+	}
+
+	#[tokio::test]
+	async fn queue_is_outside_deadline() {
+		let body = r#"{"hits":[],"offset":0,"limit":20,"total_hits":0}"#;
+		let (base, _) = serve(vec![response("200 OK", "", body)]).await;
+		let m = Arc::new(client(&base).with_deadline(Duration::from_millis(300)));
+		// Очередь занята дольше срока запроса — запрос всё равно уходит и получает ответ.
+		let held = m.limit.acquire_many(CONCURRENCY as u32).await.unwrap();
+		let task = {
+			let m = m.clone();
+			tokio::spawn(async move {
+				crate::content::within(
+					Duration::from_millis(500),
+					m.search_impl(&query(json!({ "type": "mod" }))),
+				)
+				.await
+			})
+		};
+		tokio::time::sleep(Duration::from_millis(800)).await;
+		drop(held);
+		assert!(task.await.unwrap().is_ok());
+	}
+
+	#[tokio::test]
+	async fn long_rate_pause_is_rate_limited() {
+		let m = client("http://127.0.0.1:9");
+		*m.blocked_until.lock().unwrap() = Some(Instant::now() + Duration::from_secs(5));
+		let err = crate::content::within_capped(
+			Duration::from_secs(1),
+			Duration::ZERO,
+			m.search_impl(&query(json!({ "type": "mod" }))),
+		)
+		.await
+		.unwrap_err();
+		assert_eq!(err.code, ErrorCode::RateLimited);
+	}
+
+	#[tokio::test]
+	async fn silent_server_times_out() {
+		let base = silent().await;
+		let m = client(&base).with_deadline(Duration::from_millis(500));
+		let started = Instant::now();
+		let err = m
+			.search_impl(&query(json!({ "type": "mod" })))
+			.await
+			.unwrap_err();
+		assert!(started.elapsed() < Duration::from_secs(3));
+		assert_eq!(err.code, ErrorCode::SourceUnavailable);
+		assert_eq!(
+			err.details.as_deref(),
+			Some(crate::content::TIMEOUT_DETAILS)
+		);
+		// Сохранённый ответ выручает и при молчании сервера.
+		let key = Request::Get(m.url(&["version", "v1"])).key();
+		m.cache.put(key, Duration::ZERO, Arc::new(b"{}".to_vec()));
+		let (_, offline) = m
+			.fetch(Request::Get(m.url(&["version", "v1"])), TTL_PROJECT)
+			.await
+			.unwrap();
+		assert!(offline);
 	}
 
 	#[tokio::test]

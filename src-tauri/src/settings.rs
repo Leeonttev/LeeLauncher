@@ -56,6 +56,9 @@ pub struct Settings {
 	/// Показывать в статусе название сборки (иначе просто «Minecraft»).
 	#[serde(default = "yes")]
 	pub discord_show_instance: bool,
+	/// Аргументы JVM против Java4Shell для Java 17+.
+	#[serde(default = "yes")]
+	pub java4shell_mitigation: bool,
 }
 
 fn yes() -> bool {
@@ -71,6 +74,7 @@ impl Default for Settings {
 			download_source: DownloadSource::default(),
 			discord_presence: true,
 			discord_show_instance: true,
+			java4shell_mitigation: true,
 		}
 	}
 }
@@ -98,6 +102,8 @@ pub struct SettingsPatch {
 	pub discord_presence: Option<bool>,
 	#[serde(default)]
 	pub discord_show_instance: Option<bool>,
+	#[serde(default)]
+	pub java4shell_mitigation: Option<bool>,
 }
 
 pub struct SettingsStore {
@@ -167,6 +173,9 @@ impl SettingsStore {
 		if let Some(on) = patch.discord_show_instance {
 			next.discord_show_instance = on;
 		}
+		if let Some(on) = patch.java4shell_mitigation {
+			next.java4shell_mitigation = on;
+		}
 		let json =
 			serde_json::to_vec_pretty(&next).map_err(|e| AppError::storage(e.to_string()))?;
 		fs_util::write_atomic(&self.path, &json)
@@ -219,6 +228,7 @@ mod tests {
 	fn discord_defaults_and_patch() {
 		let old: Settings = serde_json::from_str(r#"{ "version": 1 }"#).unwrap();
 		assert!(old.discord_presence && old.discord_show_instance);
+		assert!(old.java4shell_mitigation);
 
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("settings.json");

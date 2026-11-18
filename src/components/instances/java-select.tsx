@@ -1,4 +1,4 @@
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -14,9 +14,11 @@ import {
 } from "@/components/ui/select";
 import { javaApi, type JavaInstall } from "@/lib/api";
 import { errorText, toAppError } from "@/lib/errors";
+import { refreshJava, useGameSettings } from "@/lib/game-settings";
 import { cn } from "@/lib/utils";
 
 const AUTO = "auto";
+const OPEN_RESCAN_MS = 5_000;
 const BROWSE = "browse";
 
 type JavaSelectProps = {
@@ -58,6 +60,8 @@ export function JavaSelect({
 }: JavaSelectProps) {
 	const { t, i18n } = useTranslation();
 	const [picking, setPicking] = useState(false);
+	const game = useGameSettings();
+	const searching = game.javaRefreshing || game.java.status === "loading";
 	const list = (installs ?? []).filter(
 		(java) => incompatibleNote || major === null || java.major === major,
 	);
@@ -91,6 +95,9 @@ export function JavaSelect({
 		<Select
 			value={value ?? AUTO}
 			disabled={disabled}
+			onOpenChange={(open) => {
+				if (open) void refreshJava(OPEN_RESCAN_MS);
+			}}
 			onValueChange={(next) => {
 				if (next === BROWSE) void browse();
 				else onChange(next === AUTO ? null : next);
@@ -156,6 +163,15 @@ export function JavaSelect({
 					<FolderOpen />
 					{t("instance.settings.java.browse")}
 				</SelectItem>
+				{searching && (
+					<div
+						role="status"
+						className="flex items-center gap-2 px-2.5 pt-1.5 pb-1 text-xs/4 text-muted-foreground"
+					>
+						<LoaderCircle className="size-3.5 animate-spin" />
+						{t("instance.settings.java.searching")}
+					</div>
+				)}
 			</SelectContent>
 		</Select>
 	);

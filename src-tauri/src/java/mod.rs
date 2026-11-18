@@ -16,6 +16,19 @@ pub const JAVA_BIN: &str = if cfg!(windows) { "javaw.exe" } else { "java" };
 /// Консольный файл: для процессоров Forge и проверки версии.
 pub const JAVA_CONSOLE_BIN: &str = if cfg!(windows) { "java.exe" } else { "java" };
 
+/// Обход Java4Shell (CVE-2026-114938): выключает интринсик Base64 HotSpot, в котором переполнение.
+const JAVA4SHELL_ARGS: [&str; 2] = ["-XX:+UnlockDiagnosticVMOptions", "-XX:-UseBASE64Intrinsics"];
+
+/// Аргументы JVM против Java4Shell. Только Java 17+: уязвимость там, а Java 8 с незнакомым
+/// флагом `-XX` не запускается.
+pub fn mitigation_args(major: u32, enabled: bool) -> &'static [&'static str] {
+	if enabled && major >= 17 {
+		&JAVA4SHELL_ARGS
+	} else {
+		&[]
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JavaInstall {
@@ -30,6 +43,9 @@ pub struct JavaInstall {
 	pub vendor: Option<String>,
 	/// Скачана лаунчером (лежит в `%APPDATA%\LeeLauncher\java`).
 	pub managed: bool,
+	/// Только у скачанных нами: есть новая версия этого компонента Java (`java_update`).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub update_available: Option<String>,
 }
 
 impl JavaInstall {
@@ -221,6 +237,7 @@ fn check_at(path: &Path, managed_root: &Path) -> Result<(JavaInstall, Option<Pat
 			arch: probe.arch,
 			vendor: probe.vendor,
 			managed: managed_root.is_some_and(|root| exe.starts_with(root)),
+			update_available: None,
 		},
 		java_home,
 	))
@@ -433,7 +450,7 @@ fn candidates(managed_root: &Path) -> Vec<PathBuf> {
 	out.extend(
 		subdirs(managed_root)
 			.into_iter()
-			.filter(|d| runtime::is_complete(d)),
+			.filter(|d| runtime::is_complete(d) && !runtime::is_hidden(d)),
 	);
 	if let Some(home) = dirs::home_dir() {
 		out.extend(subdirs(&home.join(".jdks")));
@@ -556,7 +573,19 @@ mod tests {
 			arch: arch.into(),
 			vendor: None,
 			managed,
+			update_available: None,
 		}
+	}
+
+	#[test]
+	fn java4shell_only_for_17_plus() {
+		for major in [8, 11, 16] {
+			assert!(mitigation_args(major, true).is_empty(), "Java {major}");
+		}
+		for major in [17, 21, 25] {
+			assert_eq!(mitigation_args(major, true), JAVA4SHELL_ARGS);
+		}
+		assert!(mitigation_args(21, false).is_empty());
 	}
 
 	#[test]

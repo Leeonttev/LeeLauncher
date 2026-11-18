@@ -310,9 +310,17 @@ pub async fn instance_open_folder(
 }
 
 /// Всегда ищет заново («Найти снова») и обновляет кэш, которым пользуется запуск игры.
+/// У скачанных нами Java — `updateAvailable` по индексу на диске (без ожидания сети).
 #[tauri::command]
 pub async fn java_list(l: L<'_>) -> Result<Vec<JavaInstall>, AppError> {
-	Ok(l.java_found.refresh(&l.layout.java_dir()).await)
+	let java_dir = l.layout.java_dir();
+	let mut list = l.java_found.refresh(&java_dir).await;
+	for java in list.iter_mut().filter(|j| j.managed) {
+		java.update_available = java::runtime::home_of(&java.path, &java_dir)
+			.and_then(|home| java::runtime::update_cached(&l.meta, &home));
+	}
+	java::runtime::refresh_index_soon(l.inner().clone());
+	Ok(list)
 }
 
 #[tauri::command]
@@ -370,6 +378,22 @@ pub async fn java_install(app: AppHandle, l: L<'_>, major: u32) -> Result<JavaIn
 	start_java(app, l.inner().clone(), major).1.await
 }
 
+/// Обновить скачанную нами Java этой мажорной версии (задача `java` в «Загрузках»).
+/// Нашей Java этой версии нет — `java_not_found`, ею пользуется игра — `file_in_use`.
+#[tauri::command]
+pub async fn java_update(app: AppHandle, l: L<'_>, major: u32) -> Result<JavaInstall, AppError> {
+	let Some((home, _)) = java::runtime::installed(&l.layout.java_dir(), major) else {
+		return Err(AppError::coded(
+			ErrorCode::JavaNotFound,
+			format!("Java {major}"),
+		));
+	};
+	if l.games.java_in_use(&home) {
+		return Err(java::runtime::in_use_error(&home));
+	}
+	start_java(app, l.inner().clone(), major).1.await
+}
+
 /// Ставит загрузку Java в список загрузок и возвращает id задачи и саму загрузку
 /// (её ждёт `java_install` или запускает в фоне `download_retry`).
 fn start_java(
@@ -417,14 +441,19 @@ fn start_java(
 				_ = cancel.cancelled() => return Err(AppError::new(ErrorCode::Cancelled)),
 				g = l.java_lock.lock() => g,
 			};
+			// Наша Java этой версии уже есть — обновляем тот же компонент.
+			let component = java::runtime::installed(&l.layout.java_dir(), major)
+				.map(|(_, marker)| marker.component);
+			let in_use = |dir: &std::path::Path| l.games.java_in_use(dir);
 			java::runtime::install(
 				&l.meta,
 				&l.dl,
 				&l.layout.java_dir(),
-				None,
+				component.as_deref(),
 				major,
 				progress.clone(),
 				&cancel,
+				&in_use,
 			)
 			.await
 		}

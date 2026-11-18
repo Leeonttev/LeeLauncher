@@ -1,5 +1,6 @@
 import { Braces, Globe, Package, Palette, Puzzle, Sparkles, type LucideIcon } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { useImageDeadline } from "@/hooks/use-image-deadline";
 import type { CatalogProjectType } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -55,9 +56,13 @@ function Loaded({
 }) {
 	const [state, setState] = useState<"loading" | "ready" | "error">("loading");
 	const [pixelated, setPixelated] = useState(false);
+	const ref = useRef<HTMLSpanElement>(null);
+	const giveUp = useCallback(() => setState((s) => (s === "loading" ? "error" : s)), []);
+	useImageDeadline(ref, state === "loading", giveUp);
 	if (state === "error") return <Fallback type={type} size={size} className={className} />;
 	return (
 		<span
+			ref={ref}
 			aria-hidden
 			className={cn(
 				"relative block shrink-0",

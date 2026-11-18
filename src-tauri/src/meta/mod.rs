@@ -515,7 +515,7 @@ fn recommended(list: &[LoaderVersion]) -> Option<&LoaderVersion> {
 	list.iter().find(|l| l.stable).or_else(|| list.first())
 }
 
-fn is_fresh(path: &Path, ttl: Option<Duration>) -> bool {
+pub(crate) fn is_fresh(path: &Path, ttl: Option<Duration>) -> bool {
 	let Ok(meta) = std::fs::metadata(path) else {
 		return false;
 	};

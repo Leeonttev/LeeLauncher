@@ -33,6 +33,9 @@ pub struct SourceRef {
 	pub version_number: Option<String>,
 	#[serde(default)]
 	pub author: Option<String>,
+	/// Slug проекта в его каталоге: по нему узнаётся тот же проект в другом каталоге.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub slug: Option<String>,
 }
 
 /// Найденное обновление (по последней проверке).
@@ -44,6 +47,19 @@ pub struct UpdateInfo {
 	/// Новую версию можно скачать только на сайте каталога.
 	#[serde(default)]
 	pub site_only: bool,
+	/// Найдено в другом каталоге (свой не ответил): ставится оттуда.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub via: Option<SourceKind>,
+	/// Проект в каталоге `via`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub via_project_id: Option<String>,
+}
+
+impl UpdateInfo {
+	/// Каталог, откуда ставится обновление.
+	pub fn catalog(&self, source: &SourceRef) -> SourceKind {
+		self.via.unwrap_or(source.kind)
+	}
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +113,8 @@ pub struct ItemUpdate {
 	pub version_id: String,
 	pub number: String,
 	pub site_only: bool,
+	/// Обновление из другого каталога (`project.source` не ответил); `null` — из своего.
+	pub via: Option<SourceKind>,
 }
 
 /// Файл контента для интерфейса. Файл в командах задаётся тройкой `{ file, type, world? }`.
@@ -150,6 +168,7 @@ impl ContentItem {
 				version_id: u.version_id.clone(),
 				number: u.version_number.clone(),
 				site_only: u.site_only,
+				via: u.via,
 			}),
 			from_modpack: false,
 			sha1: entry.sha1.clone(),
@@ -647,6 +666,8 @@ pub struct ContentLocks {
 	updates_checked: std::sync::Mutex<HashMap<String, std::time::Instant>>,
 	/// Последнее определение файлов или проверка обновлений не дошли до каталога (нет сети).
 	offline: std::sync::Mutex<HashMap<String, bool>>,
+	/// Каталоги, которые не ответили при последней проверке (остальные ответили).
+	failed: std::sync::Mutex<HashMap<String, Vec<super::SourceFailure>>>,
 }
 
 impl ContentLocks {
@@ -691,6 +712,22 @@ impl ContentLocks {
 		if let Ok(mut m) = self.offline.lock() {
 			m.insert(instance_id.to_owned(), offline);
 		}
+	}
+
+	/// `true` — список изменился.
+	pub fn set_failed(&self, instance_id: &str, failed: Vec<super::SourceFailure>) -> bool {
+		self.failed.lock().is_ok_and(|mut m| {
+			let old = m.insert(instance_id.to_owned(), failed.clone());
+			old.unwrap_or_default() != failed
+		})
+	}
+
+	pub fn failed(&self, instance_id: &str) -> Vec<super::SourceFailure> {
+		self.failed
+			.lock()
+			.ok()
+			.and_then(|m| m.get(instance_id).cloned())
+			.unwrap_or_default()
 	}
 
 	pub fn is_offline(&self, instance_id: &str) -> bool {
@@ -825,6 +862,7 @@ mod tests {
 			icon_url: None,
 			version_number: None,
 			author: None,
+			slug: None,
 		});
 		let (list, changed) = sync(game, &mut index);
 		assert!(!changed);

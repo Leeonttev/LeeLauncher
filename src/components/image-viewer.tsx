@@ -42,6 +42,8 @@ export function ViewerButton({
 	);
 }
 
+const VIEWER_DEADLINE = 20_000;
+
 export function ImageViewer({
 	items,
 	index,
@@ -70,6 +72,18 @@ export function ImageViewer({
 		if (count < 2) return;
 		onIndexChange((index + delta + count) % count);
 	};
+
+	// Крупная картинка с недоступного сервера иначе крутилась бы бесконечно.
+	const src = item?.src;
+	const pending = open && src !== undefined && !loaded[src];
+	useEffect(() => {
+		if (!pending || src === undefined) return;
+		const timer = setTimeout(
+			() => setLoaded((prev) => (prev[src] ? prev : { ...prev, [src]: "error" })),
+			VIEWER_DEADLINE,
+		);
+		return () => clearTimeout(timer);
+	}, [pending, src]);
 
 	useEffect(() => {
 		if (!open) return;

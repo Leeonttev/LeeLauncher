@@ -22,6 +22,7 @@ import { InstanceContextPicker } from "@/components/catalog/instance-context-pic
 import { ModpackInstallButton } from "@/components/catalog/modpack-install-button";
 import { ProjectIcon } from "@/components/catalog/project-icon";
 import { ProjectMeta } from "@/components/catalog/project-meta";
+import { SlowNotice } from "@/components/catalog/slow-notice";
 import { CenteredState } from "@/components/centered-state";
 import { useScrollContainer } from "@/components/layout/scroll-container";
 import { PageTabs } from "@/components/page-tabs";
@@ -32,6 +33,7 @@ import { useDelayedFlag } from "@/hooks/use-delayed-flag";
 import {
 	catalogApi,
 	external,
+	type AlsoOn,
 	type ContentSource,
 	type ContentVersion,
 	type Instance,
@@ -42,6 +44,7 @@ import {
 	clearProjectTabHint,
 	contextInstance,
 	DEFAULT_SOURCE,
+	isUnreachable,
 	loadCategories,
 	openProject,
 	projectAlsoOnHint,
@@ -51,6 +54,7 @@ import {
 	setCatalogContext,
 	SOURCE_NAMES,
 	useCatalog,
+	withDeadline,
 	type CatalogType,
 } from "@/lib/catalog";
 import { installButtonState, useInstallUi, type ProjectRef } from "@/lib/content-install";
@@ -107,8 +111,7 @@ export function ProjectPage() {
 		if (!id || !instancesReady) return;
 		let alive = true;
 		const hint = projectTypeHint(id);
-		catalogApi
-			.project({ id, source, instanceId, projectType: hint })
+		withDeadline(catalogApi.project({ id, source, instanceId, projectType: hint }))
 			.then((value) => alive && setProject({ status: "ready", value }))
 			.catch((err: unknown) => alive && setProject({ status: "error", error: toAppError(err) }));
 		return () => {
@@ -119,8 +122,7 @@ export function ProjectPage() {
 	useEffect(() => {
 		if (!id || !instancesReady) return;
 		let alive = true;
-		catalogApi
-			.versions({ projectId: id, source, instanceId })
+		withDeadline(catalogApi.versions({ projectId: id, source, instanceId }))
 			.then((value) => alive && setVersions({ status: "ready", value }))
 			.catch((err: unknown) => alive && setVersions({ status: "error", error: toAppError(err) }));
 		return () => {
@@ -167,10 +169,11 @@ export function ProjectPage() {
 					error={project.error}
 					source={source}
 					url={projectUrlHint(id)}
+					alsoOn={projectAlsoOnHint(id)}
 					onRetry={retry}
 				/>
 			) : (
-				<ProjectSkeleton />
+				<ProjectSkeleton source={source} />
 			)}
 		</div>
 	);
@@ -196,11 +199,13 @@ function ProjectError({
 	error,
 	source,
 	url,
+	alsoOn,
 	onRetry,
 }: {
 	error: AppError;
 	source: ContentSource;
 	url?: string;
+	alsoOn: AlsoOn[];
 	onRetry: () => void;
 }) {
 	const { t } = useTranslation();
@@ -245,26 +250,51 @@ function ProjectError({
 			/>
 		);
 	}
+	const unreachable = isUnreachable(error);
+	const twin = unreachable ? alsoOn.find((item) => item.source !== source) : undefined;
 	return (
 		<CenteredState
 			icon={error.code === "network" ? WifiOff : OctagonX}
 			tone="destructive"
 			heading="h1"
-			title={t("project.error.title")}
-			description={errorText(error)}
+			title={
+				unreachable
+					? t("catalog.error.unreachableTitle", { source: SOURCE_NAMES[source] })
+					: t("project.error.title")
+			}
+			description={unreachable ? t("catalog.error.unreachableDescription") : errorText(error)}
 			action={
-				<Button variant="outline" onClick={onRetry}>
-					<RotateCcw />
-					{t("common.retry")}
-				</Button>
+				<div className="flex flex-wrap justify-center gap-2">
+					<Button variant="outline" onClick={onRetry}>
+						<RotateCcw />
+						{t("common.retry")}
+					</Button>
+					{twin && (
+						<Button
+							variant="outline"
+							onClick={() => openProject(twin, projectTypeHint(twin.id), { url: twin.url })}
+						>
+							<ArrowRight />
+							{t("project.alsoOn", { source: SOURCE_NAMES[twin.source] })}
+						</Button>
+					)}
+				</div>
 			}
 		/>
 	);
 }
 
-function ProjectSkeleton() {
+function ProjectSkeleton({ source }: { source: ContentSource }) {
 	const show = useDelayedFlag(true, 150);
-	if (!show) return null;
+	return (
+		<>
+			<SlowNotice loading source={source} className="mt-3" />
+			{show && <SkeletonBody />}
+		</>
+	);
+}
+
+function SkeletonBody() {
 	return (
 		<div aria-busy>
 			<div className={cn(PROJECT_GRID, "mt-3")}>
@@ -521,7 +551,7 @@ function ProjectView({
 							<InstallNote
 								project={ref}
 								instance={contentInstance}
-								version={project.bestVersion}
+								version={project.bestVersion ?? undefined}
 							/>
 						)
 					)}

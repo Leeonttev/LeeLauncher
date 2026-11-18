@@ -17,6 +17,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +29,205 @@ use crate::meta::LoaderKind;
 
 /// Событие: содержимое сборки изменилось (установка, удаление, переключение, папки на диске).
 pub const EVENT_CHANGED: &str = "instance-content-changed";
+
+/// Один запрос к API каталога вместе с повторами — с первой отправки; очередь к каталогу
+/// и пауза лимита запросов сюда не входят.
+pub const FETCH_DEADLINE: Duration = Duration::from_secs(10);
+/// Сколько команда каталога для интерфейса ждёт ответа целиком.
+pub const UI_DEADLINE: Duration = Duration::from_secs(12);
+/// Один каталог при проверке обновлений и опознании файлов.
+pub const SOURCE_DEADLINE: Duration = Duration::from_secs(12);
+/// На сколько очередь и пауза лимита могут продлить срок [`within`]: верхний предел команды.
+pub const WAIT_ALLOWANCE: Duration = Duration::from_secs(20);
+/// `details` ошибки `source_unavailable`, когда каталог не уложился в срок.
+pub const TIMEOUT_DETAILS: &str = "timeout";
+
+/// Каталог не ответил вовремя.
+pub fn timed_out() -> AppError {
+	AppError::coded(ErrorCode::SourceUnavailable, TIMEOUT_DETAILS)
+}
+
+/// Срок запроса вышел: соединение так и не установилось — `network`, иначе — `timeout`.
+pub fn deadline_error(source: &str, connect_failed: bool) -> AppError {
+	if connect_failed {
+		AppError::coded(ErrorCode::Network, format!("{source}: нет соединения"))
+	} else {
+		timed_out()
+	}
+}
+
+/// Срок команды: пока запросы ждут очереди или паузы лимита ([`waiting`]), он стоит,
+/// но не дальше `hard`.
+struct Budget {
+	state: std::sync::Mutex<BudgetState>,
+	hard: Instant,
+	parent: Option<Arc<Budget>>,
+}
+
+struct BudgetState {
+	deadline: Instant,
+	waiting: u32,
+	since: Instant,
+}
+
+impl Budget {
+	fn enter(&self) {
+		if let Ok(mut s) = self.state.lock() {
+			if s.waiting == 0 {
+				s.since = Instant::now();
+			}
+			s.waiting += 1;
+		}
+		if let Some(p) = &self.parent {
+			p.enter();
+		}
+	}
+
+	fn leave(&self) {
+		if let Ok(mut s) = self.state.lock() {
+			s.waiting = s.waiting.saturating_sub(1);
+			if s.waiting == 0 {
+				let paused = s.since.elapsed();
+				s.deadline = (s.deadline + paused).min(self.hard);
+			}
+		}
+		if let Some(p) = &self.parent {
+			p.leave();
+		}
+	}
+
+	/// Когда проверить срок снова и не вышел ли он уже.
+	fn next_check(&self) -> Option<Instant> {
+		let now = Instant::now();
+		if now >= self.hard {
+			return None;
+		}
+		let s = self.state.lock().ok()?;
+		let at = if s.waiting > 0 {
+			now + s.deadline.saturating_duration_since(s.since)
+		} else {
+			s.deadline
+		};
+		if at <= now {
+			return None;
+		}
+		Some(at.min(self.hard))
+	}
+}
+
+tokio::task_local! {
+	static BUDGET: Arc<Budget>;
+}
+
+/// `fut`, но не дольше `limit` (иначе `source_unavailable`/`timeout`). Очередь к каталогу
+/// и пауза лимита в срок не входят, но всё вместе — не дольше `limit` + [`WAIT_ALLOWANCE`].
+pub async fn within<T>(
+	limit: Duration,
+	fut: impl Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+	within_capped(limit, WAIT_ALLOWANCE, fut).await
+}
+
+/// [`within`] со своим запасом на ожидание (`0` — срок не продлевается).
+pub async fn within_capped<T>(
+	limit: Duration,
+	allowance: Duration,
+	fut: impl Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+	let now = Instant::now();
+	let parent = BUDGET.try_with(|b| b.clone()).ok();
+	let mut hard = now + limit + allowance;
+	if let Some(p) = &parent {
+		hard = hard.min(p.hard);
+	}
+	let budget = Arc::new(Budget {
+		state: std::sync::Mutex::new(BudgetState {
+			deadline: (now + limit).min(hard),
+			waiting: 0,
+			since: now,
+		}),
+		hard,
+		parent,
+	});
+	let fut = BUDGET.scope(budget.clone(), fut);
+	tokio::pin!(fut);
+	loop {
+		let Some(at) = budget.next_check() else {
+			return Err(timed_out());
+		};
+		tokio::select! {
+			result = &mut fut => return result,
+			_ = tokio::time::sleep_until(at) => {}
+		}
+	}
+}
+
+/// Ожидание вне срока команды: очередь к каталогу, пауза лимита запросов.
+pub async fn waiting<T>(fut: impl Future<Output = T>) -> T {
+	struct Leave(Option<Arc<Budget>>);
+	impl Drop for Leave {
+		fn drop(&mut self) {
+			if let Some(b) = &self.0 {
+				b.leave();
+			}
+		}
+	}
+	let budget = BUDGET.try_with(|b| b.clone()).ok();
+	if let Some(b) = &budget {
+		b.enter();
+	}
+	let _leave = Leave(budget);
+	fut.await
+}
+
+/// Пауза лимита дольше, чем осталось команде: ждать бессмысленно — сразу `rate_limited`.
+pub fn wait_exceeds_command(wait: Duration) -> bool {
+	BUDGET
+		.try_with(|b| Instant::now() + wait > b.hard)
+		.unwrap_or(false)
+}
+
+/// Каталог, который не ответил при проверке файлов сборки.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceFailure {
+	pub source: SourceKind,
+	pub code: ErrorCode,
+	/// Часть его файлов проверена через другой каталог; `null` — ни одного.
+	pub covered_by: Option<Coverage>,
+}
+
+/// Сколько файлов не ответившего каталога нашлось и проверено в другом.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Coverage {
+	pub source: SourceKind,
+	pub files: u32,
+}
+
+/// Каталог не ответил (сеть, сбой, срок), а не «не нашёл»: его файлы можно проверить в другом.
+pub fn worth_fallback(err: &AppError) -> bool {
+	matches!(err.code, ErrorCode::Network | ErrorCode::SourceUnavailable)
+}
+
+/// Общая ошибка, когда не ответил ни один нужный каталог.
+pub fn all_failed(mut errors: Vec<AppError>) -> AppError {
+	if errors.len() == 1 {
+		return errors.remove(0);
+	}
+	if errors.iter().all(|e| e.code == ErrorCode::Network) {
+		return AppError::coded(ErrorCode::Network, "все каталоги: нет соединения");
+	}
+	if errors.iter().all(|e| {
+		e.code == ErrorCode::SourceUnavailable && e.details.as_deref() == Some(TIMEOUT_DETAILS)
+	}) {
+		return timed_out();
+	}
+	errors
+		.into_iter()
+		.find(|e| e.code != ErrorCode::Network)
+		.unwrap_or_else(|| AppError::coded(ErrorCode::Network, "нет соединения"))
+}
 
 /// Каталог, откуда пришёл контент.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -43,6 +245,14 @@ impl SourceKind {
 		match self {
 			Self::Modrinth => "modrinth",
 			Self::Curseforge => "curseforge",
+		}
+	}
+
+	/// Второй каталог (подстраховка).
+	pub fn other(self) -> Self {
+		match self {
+			Self::Modrinth => Self::Curseforge,
+			Self::Curseforge => Self::Modrinth,
 		}
 	}
 }
@@ -875,6 +1085,38 @@ pub fn check_ref(id: &str) -> Result<(), AppError> {
 pub mod tests {
 	use super::*;
 	use crate::instances::Loader;
+
+	#[tokio::test]
+	async fn within_stops_while_waiting() {
+		let started = std::time::Instant::now();
+		let result = within_capped(Duration::from_millis(200), Duration::from_secs(2), async {
+			waiting(tokio::time::sleep(Duration::from_millis(500))).await;
+			Ok::<_, AppError>(())
+		})
+		.await;
+		assert!(result.is_ok());
+		assert!(started.elapsed() >= Duration::from_millis(500));
+		// Без ожидания срок действует как прежде.
+		let err = within(Duration::from_millis(100), async {
+			tokio::time::sleep(Duration::from_millis(400)).await;
+			Ok::<_, AppError>(())
+		})
+		.await
+		.unwrap_err();
+		assert_eq!(err.details.as_deref(), Some(TIMEOUT_DETAILS));
+		// Верхний предел: ждать дольше запаса нельзя.
+		let err = within_capped(
+			Duration::from_millis(100),
+			Duration::from_millis(200),
+			async {
+				waiting(tokio::time::sleep(Duration::from_secs(5))).await;
+				Ok::<_, AppError>(())
+			},
+		)
+		.await
+		.unwrap_err();
+		assert_eq!(err.code, ErrorCode::SourceUnavailable);
+	}
 
 	pub fn version(id: &str, channel: VersionChannel, game: &str, loader: &str) -> ContentVersion {
 		ContentVersion {

@@ -39,6 +39,8 @@ pub struct LaunchContext<'a> {
 	pub memory: Memory,
 	pub resolution: Option<Resolution>,
 	pub user_jvm_args: &'a [String],
+	/// Защитные аргументы JVM (против Java4Shell), перед пользовательскими.
+	pub security_jvm_args: &'a [&'static str],
 	/// Сразу зайти в этот мир (папка в `saves/`): `--quickPlaySingleplayer` (1.20+).
 	pub quick_play_world: Option<&'a str>,
 }
@@ -292,6 +294,7 @@ pub fn build(ctx: &LaunchContext) -> Args {
 	) {
 		out.push(logging.argument.replace("${path}", &path_text(path)));
 	}
+	out.extend(ctx.security_jvm_args.iter().map(|a| (*a).to_owned()));
 	out.extend(ctx.user_jvm_args.iter().cloned());
 	let jvm = std::mem::take(&mut out);
 
@@ -523,6 +526,7 @@ mod tests {
 			},
 			resolution,
 			user_jvm_args: user,
+			security_jvm_args: &[],
 			quick_play_world: None,
 		}
 	}
@@ -530,6 +534,32 @@ mod tests {
 	fn after<'a>(args: &'a [String], flag: &str) -> &'a str {
 		let i = args.iter().position(|a| a == flag).unwrap();
 		&args[i + 1]
+	}
+
+	#[test]
+	fn java4shell_before_user_args() {
+		let info = modern();
+		let p = paths();
+		let creds = creds("0", "legacy");
+		let cp = classpath(&info, &p.libs, &p.client, WIN64).unwrap();
+		let user = split_user_args("-XX:+UseG1GC");
+		let flags = ["-XX:+UnlockDiagnosticVMOptions", "-XX:-UseBASE64Intrinsics"];
+
+		let mut c = ctx(&info, &p, &creds, &cp, &user, None);
+		c.security_jvm_args = crate::java::mitigation_args(21, true);
+		let jvm = build(&c).jvm;
+		assert_eq!(&jvm[jvm.len() - 3..], [flags[0], flags[1], "-XX:+UseG1GC"]);
+
+		for major in [8, 11] {
+			c.security_jvm_args = crate::java::mitigation_args(major, true);
+			let jvm = build(&c).jvm;
+			assert!(
+				!jvm.iter().any(|a| flags.contains(&a.as_str())),
+				"Java {major}"
+			);
+		}
+		c.security_jvm_args = crate::java::mitigation_args(17, false);
+		assert!(!build(&c).jvm.iter().any(|a| flags.contains(&a.as_str())));
 	}
 
 	#[test]

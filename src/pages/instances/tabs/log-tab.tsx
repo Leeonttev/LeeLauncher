@@ -2,6 +2,7 @@ import {
 	ArrowUpRight,
 	Copy,
 	FolderOpen,
+	Info,
 	OctagonX,
 	Play,
 	RotateCcw,
@@ -78,6 +79,8 @@ export function LogTab({ instance }: { instance: Instance }) {
 	const store = useInstances();
 	const status = statusOf(instance, store);
 	const running = status === "running" || status === "launching";
+	// Игру запустил прошлый экземпляр лаунчера: её вывода у нас нет.
+	const recovered = running && store.processes[instance.id]?.recovered === true && log?.source !== "live";
 	const [level, setLevel] = useState<Level>("all");
 	const [query, setQuery] = useState("");
 	const [current, setCurrent] = useState(0);
@@ -135,6 +138,16 @@ export function LogTab({ instance }: { instance: Instance }) {
 				}
 			/>
 		);
+	} else if (recovered) {
+		body = (
+			<>
+				<LogStatus instance={instance} store={store} lineCount={0} recovered />
+				<p className="mt-3 flex max-w-prose items-start gap-2 text-[13px]/[18px] text-muted-foreground">
+					<Info className="mt-px shrink-0" />
+					{t("log.recovered")}
+				</p>
+			</>
+		);
 	} else if (loading) {
 		body = showSkeleton ? <Skeleton className="mt-4 h-80 w-full rounded-xl" /> : null;
 	} else if (!lines.length && !running) {
@@ -173,7 +186,7 @@ export function LogTab({ instance }: { instance: Instance }) {
 		);
 	}
 
-	const hasLog = lines.length > 0 || running;
+	const hasLog = !recovered && (lines.length > 0 || running);
 	return (
 		<div className="flex flex-1 flex-col">
 			{hasLog && log?.status === "ready" && (
@@ -278,10 +291,12 @@ function LogStatus({
 	instance,
 	store,
 	lineCount,
+	recovered = false,
 }: {
 	instance: Instance;
 	store: InstancesStore;
 	lineCount: number;
+	recovered?: boolean;
 }) {
 	const { t } = useTranslation();
 	const log = useGameLog(instance.id, false);
@@ -300,7 +315,9 @@ function LogStatus({
 					<span aria-hidden className="size-2 shrink-0 rounded-full bg-primary" />
 				)}
 				<span className="truncate tabular-nums">
-					{t("log.running", { duration: formatDuration(session ?? 0), count: lineCount })}
+					{recovered
+						? t("log.runningNoLog", { duration: formatDuration(session ?? 0) })
+						: t("log.running", { duration: formatDuration(session ?? 0), count: lineCount })}
 				</span>
 			</p>
 		);

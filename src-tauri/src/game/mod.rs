@@ -6,6 +6,7 @@ pub mod commands;
 mod live_tests;
 pub mod logs;
 mod options;
+mod running;
 mod tree;
 
 use std::collections::HashMap;
@@ -16,7 +17,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -111,7 +112,7 @@ pub struct LogBatch {
 
 /// Аккаунт, с которым запущена игра. Снимок на момент запуска: переименование, удаление
 /// или смена активного аккаунта его не меняют.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameAccount {
 	pub id: String,
@@ -144,6 +145,12 @@ pub struct RunningGame {
 	pub account: Option<GameAccount>,
 	/// ISO 8601: начало запуска.
 	pub started_at: String,
+	/// Игру запустил прошлый экземпляр лаунчера: лога нет, за процессом следим по PID.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub recovered: bool,
+	/// Путь к Java игры: пока она идёт, эту Java не обновляем.
+	#[serde(skip)]
+	pub java: Option<String>,
 }
 
 /// Куда запуск сообщает о себе (в приложении — события Tauri, в тестах — печать).
@@ -154,14 +161,47 @@ pub trait GameEvents: Send + Sync {
 }
 
 /// Запущенные игры и их логи; лежит в [`Launcher`].
-#[derive(Default)]
 pub struct Games {
 	running: Mutex<HashMap<String, RunningGame>>,
 	/// Лог последнего запуска каждой сборки (живёт до перезапуска лаунчера).
 	logs: Mutex<HashMap<String, Arc<Mutex<Buffer>>>>,
+	/// `running.json`: чтобы найти игры после перезапуска лаунчера.
+	file: running::RunningFile,
+}
+
+impl Default for Games {
+	fn default() -> Self {
+		Self::new(None)
+	}
 }
 
 impl Games {
+	pub fn new(file: Option<PathBuf>) -> Self {
+		Self {
+			running: Mutex::default(),
+			logs: Mutex::default(),
+			file: running::RunningFile::new(file),
+		}
+	}
+
+	/// Идёт игра на Java из этой папки.
+	pub fn java_in_use(&self, dir: &Path) -> bool {
+		let dir = dir.to_string_lossy().to_lowercase();
+		let dir = dir.trim_end_matches(['\\', '/']);
+		self.running
+			.lock()
+			.map(|r| {
+				r.values().any(|g| {
+					g.java.as_deref().is_some_and(|java| {
+						java.to_lowercase()
+							.strip_prefix(dir)
+							.is_some_and(|rest| rest.starts_with(['\\', '/']))
+					})
+				})
+			})
+			.unwrap_or(false)
+	}
+
 	pub fn running(&self) -> Vec<RunningGame> {
 		self.running
 			.lock()
@@ -385,6 +425,7 @@ pub async fn prepare(
 		memory,
 		resolution: instance.resolution.and_then(GameWindow::size),
 		user_jvm_args: &user_args,
+		security_jvm_args: java::mitigation_args(java.major, settings.java4shell_mitigation),
 		quick_play_world: world,
 	};
 	let args = args::build(&ctx);
@@ -485,6 +526,8 @@ where
 		pid: None,
 		account: None,
 		started_at: started_at.clone(),
+		recovered: false,
+		java: None,
 	});
 	events.process(ProcessEvent::new(&id, ProcessState::Starting));
 
@@ -500,11 +543,23 @@ where
 			pid: None,
 			account: Some(who.clone()),
 			started_at: started_at.clone(),
+			recovered: false,
+			java: None,
 		});
 		let mut event = ProcessEvent::new(&id, ProcessState::Starting);
 		event.account = Some(who);
 		events.process(event);
 		let plan = prepare(&l, &instance, &creds, world.as_deref()).await?;
+		// Java выбрана: с этой минуты её не обновляем (`java_in_use`), хотя процесса ещё нет.
+		l.games.set_running(RunningGame {
+			instance_id: id.clone(),
+			state: ProcessState::Starting,
+			pid: None,
+			account: account.clone(),
+			started_at: started_at.clone(),
+			recovered: false,
+			java: Some(plan.java.path.clone()),
+		});
 		log::info!(
 			"запуск {id}: Minecraft {} {} {:?}, Java {} ({}), аккаунт {} ({})",
 			instance.game_version,
@@ -568,9 +623,23 @@ where
 		state: ProcessState::Running,
 		pid,
 		account: account.clone(),
-		started_at,
+		started_at: started_at.clone(),
+		recovered: false,
+		java: Some(plan.java.path.clone()),
 	};
 	l.games.set_running(game.clone());
+	if let Some(pid) = pid
+		&& let Some(created) = tree::created(pid)
+	{
+		l.games.file.add(running::Record {
+			instance_id: id.clone(),
+			pid,
+			created,
+			started_at,
+			java: Some(plan.java.path.clone()),
+			account: account.clone(),
+		});
+	}
 	let mut event = ProcessEvent::new(&id, ProcessState::Running);
 	event.pid = pid;
 	event.account = account.clone();
@@ -789,6 +858,28 @@ async fn watch(w: Watch) {
 			None
 		}
 	};
+	finish(
+		&l,
+		&id,
+		events.as_ref(),
+		exit_code,
+		killed,
+		duration,
+		account,
+	)
+	.await;
+}
+
+/// После выхода игры: время игры, сборка свободна, события.
+async fn finish(
+	l: &Launcher,
+	id: &str,
+	events: &dyn GameEvents,
+	exit_code: Option<i32>,
+	killed: bool,
+	duration: u64,
+	account: Option<GameAccount>,
+) {
 	let crashed = !killed && exit_code != Some(0);
 	log::info!(
 		"игра {id}: выход с кодом {exit_code:?} через {duration} с, остановлена из лаунчера: {killed}"
@@ -796,7 +887,7 @@ async fn watch(w: Watch) {
 
 	if let Err(err) = l
 		.instances
-		.modify(&id, |i| {
+		.modify(id, |i| {
 			i.playtime = i.playtime.saturating_add(duration);
 			i.last_played_at = Some(now_iso());
 			Ok(())
@@ -805,16 +896,124 @@ async fn watch(w: Watch) {
 	{
 		log::warn!("игра {id}: не удалось записать время игры: {err}");
 	}
-	l.instances.end_run(&id);
-	l.games.clear_running(&id);
+	l.games.file.remove(id);
+	l.instances.end_run(id);
+	l.games.clear_running(id);
 	events.changed(l.instances.list().await);
-	let mut event = ProcessEvent::new(&id, ProcessState::Exited);
+	let mut event = ProcessEvent::new(id, ProcessState::Exited);
 	event.exit_code = exit_code;
 	event.crashed = Some(crashed);
 	event.killed = Some(killed);
 	event.duration_secs = Some(duration);
 	event.account = account;
 	events.process(event);
+}
+
+/// Как часто проверять игру, запущенную прошлым экземпляром лаунчера.
+const RECOVERED_POLL: Duration = Duration::from_secs(2);
+
+/// Секунды от начала запуска (ISO 8601) до сейчас.
+fn seconds_since(started_at: &str) -> u64 {
+	chrono::DateTime::parse_from_rfc3339(started_at)
+		.map(|t| {
+			(chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+				.num_seconds()
+				.max(0) as u64
+		})
+		.unwrap_or(0)
+}
+
+/// Игры из `running.json`, пережившие прошлый экземпляр лаунчера: снова считаются запущенными,
+/// за ними следим по PID. Мёртвые записи убираются. Возвращает число найденных игр.
+pub async fn recover(l: &Arc<Launcher>, events: Arc<dyn GameEvents>) -> usize {
+	let mut alive: Vec<(running::Record, tree::Watched, CancellationToken)> = Vec::new();
+	for record in l.games.file.load() {
+		if alive
+			.iter()
+			.any(|(r, ..)| r.instance_id == record.instance_id)
+		{
+			continue;
+		}
+		let Some(watched) = tree::Watched::open(record.pid, record.created) else {
+			log::info!(
+				"игра {} (процесс {}) уже закрыта",
+				record.instance_id,
+				record.pid
+			);
+			continue;
+		};
+		if l.instances.get(&record.instance_id).await.is_err() {
+			continue;
+		}
+		let Ok(kill) = l.instances.begin_run(&record.instance_id) else {
+			continue;
+		};
+		log::info!(
+			"игра {} (процесс {}) идёт с прошлого запуска лаунчера",
+			record.instance_id,
+			record.pid
+		);
+		l.games.set_running(RunningGame {
+			instance_id: record.instance_id.clone(),
+			state: ProcessState::Running,
+			pid: Some(record.pid),
+			account: record.account.clone(),
+			started_at: record.started_at.clone(),
+			recovered: true,
+			java: record.java.clone(),
+		});
+		alive.push((record, watched, kill));
+	}
+	l.games
+		.file
+		.replace(alive.iter().map(|(r, ..)| r.clone()).collect());
+	let count = alive.len();
+	for (record, watched, kill) in alive {
+		tokio::spawn(watch_recovered(
+			l.clone(),
+			record,
+			Arc::new(watched),
+			kill,
+			events.clone(),
+		));
+	}
+	count
+}
+
+async fn watch_recovered(
+	l: Arc<Launcher>,
+	record: running::Record,
+	watched: Arc<tree::Watched>,
+	kill: CancellationToken,
+	events: Arc<dyn GameEvents>,
+) {
+	let id = record.instance_id;
+	let mut killed = false;
+	let exit_code = loop {
+		if let Some(code) = watched.exit_code() {
+			break code;
+		}
+		tokio::select! {
+			_ = tokio::time::sleep(RECOVERED_POLL) => {}
+			_ = kill.cancelled(), if !killed => {
+				killed = true;
+				log::info!("игра {id}: остановка (процесс {})", record.pid);
+				let w = watched.clone();
+				let _ = tokio::task::spawn_blocking(move || w.kill()).await;
+			}
+		}
+	};
+	let duration = seconds_since(&record.started_at);
+	finish(
+		&l,
+		&id,
+		events.as_ref(),
+		exit_code,
+		killed,
+		duration,
+		record.account,
+	)
+	.await;
 }
 
 #[cfg(test)]
@@ -1018,5 +1217,112 @@ mod tests {
 			assert_eq!(events[1].error.as_ref().map(|e| e.code), Some(code));
 			assert!(!l.instances.is_running(&id));
 		}
+	}
+
+	/// Игра, пережившая лаунчер: находится по `running.json`, останавливается деревом,
+	/// после выхода пишется время игры и убирается запись.
+	#[cfg(windows)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn recovers_running_game() {
+		use std::process::Command as StdCommand;
+
+		let dir = tempfile::tempdir().unwrap();
+		let l = Launcher::new(Layout::new(dir.path().to_path_buf())).unwrap();
+		let loader = crate::instances::Loader {
+			kind: crate::meta::LoaderKind::Vanilla,
+			version: None,
+		};
+		let id = l
+			.instances
+			.create("test", "1.20.1", loader.clone(), None, None)
+			.await
+			.unwrap()
+			.id;
+		let gone = l
+			.instances
+			.create("gone", "1.20.1", loader, None, None)
+			.await
+			.unwrap()
+			.id;
+
+		let mut child = StdCommand::new("cmd")
+			.args(["/d", "/c", "ping -n 60 127.0.0.1"])
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap();
+		let pid = child.id();
+		let created = tree::created(pid).unwrap();
+		let started_at = (chrono::Utc::now() - chrono::Duration::seconds(90))
+			.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+		let record = |instance_id: &str, created: u64| running::Record {
+			instance_id: instance_id.into(),
+			pid,
+			created,
+			started_at: started_at.clone(),
+			java: Some(r"C:\Data\java\java-runtime-delta\bin\javaw.exe".into()),
+			account: Some(GameAccount::of(&steve())),
+		};
+		// Вторая запись — тот же PID с другим временем создания: это уже не наша игра.
+		running::RunningFile::new(Some(l.layout.running_file()))
+			.replace(vec![record(&id, created), record(&gone, created + 1)]);
+
+		let recorder = Arc::new(Recorder::default());
+		assert_eq!(recover(&l, recorder.clone()).await, 1);
+		let games = l.games.running();
+		assert_eq!(games.len(), 1);
+		assert!(games[0].recovered);
+		assert_eq!(games[0].pid, Some(pid));
+		assert_eq!(games[0].account.as_ref().unwrap().username, "Steve");
+		let json = serde_json::to_value(&games[0]).unwrap();
+		assert_eq!(json["recovered"], true);
+		assert!(json.get("java").is_none());
+		assert!(l.instances.is_running(&id));
+		assert!(!l.instances.is_running(&gone));
+		assert_eq!(
+			l.instances.begin_run(&id).unwrap_err().code,
+			ErrorCode::AlreadyRunning
+		);
+		assert!(
+			l.games
+				.java_in_use(Path::new(r"c:\data\java\java-runtime-delta"))
+		);
+		assert!(!l.games.java_in_use(Path::new(r"C:\Data\java\java-runtime")));
+		assert_eq!(l.games.file.load().len(), 1);
+
+		assert!(l.instances.kill(&id));
+		let deadline = Instant::now() + Duration::from_secs(15);
+		while l.instances.is_running(&id) && Instant::now() < deadline {
+			tokio::time::sleep(Duration::from_millis(100)).await;
+		}
+		assert!(!l.instances.is_running(&id));
+		assert!(l.games.running().is_empty());
+		assert!(!l.layout.running_file().exists());
+		let _ = child.wait();
+
+		{
+			let events = recorder.0.lock().unwrap();
+			let exited = events.last().unwrap();
+			assert_eq!(exited.state, ProcessState::Exited);
+			assert_eq!(exited.killed, Some(true));
+			assert_eq!(exited.crashed, Some(false));
+			assert!(exited.duration_secs.unwrap() >= 90);
+			assert_eq!(exited.account.as_ref().unwrap().username, "Steve");
+		}
+		let instance = l.instances.get(&id).await.unwrap();
+		assert!(instance.playtime >= 90);
+		assert!(instance.last_played_at.is_some());
+	}
+
+	#[test]
+	fn seconds_since_start() {
+		let t = (chrono::Utc::now() - chrono::Duration::seconds(30))
+			.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+		assert!((29..=31).contains(&seconds_since(&t)));
+		assert_eq!(seconds_since("not a date"), 0);
+		let future = (chrono::Utc::now() + chrono::Duration::seconds(30))
+			.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+		assert_eq!(seconds_since(&future), 0);
 	}
 }

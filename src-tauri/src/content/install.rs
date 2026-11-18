@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::installed::{self, Entry, Index, SourceRef, UpdateInfo};
 use super::{
-	ContentFile, ContentSource, ContentVersion, DependencyKind, ProjectHit, ProjectType,
+	ContentFile, ContentSource, ContentVersion, DependencyKind, FileKey, ProjectHit, ProjectType,
 	SourceKind, VersionFilter,
 };
 use crate::download::{Downloader, Job, Progress, Verify};
@@ -120,6 +120,95 @@ pub struct InstallPlan {
 	pub conflicts: Vec<String>,
 	/// Эта же версия уже стоит.
 	pub already_installed: bool,
+	/// Зависимости, которые уже стоят из другого каталога или файлом: не ставятся.
+	pub elsewhere: Vec<InstalledElsewhere>,
+}
+
+/// Зависимость, которая уже есть в сборке из другого каталога (или добавлена файлом).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledElsewhere {
+	/// Зависимость в каталоге установки.
+	pub project: ProjectHit,
+	/// Откуда стоит копия; `None` — файл без известного каталога.
+	pub installed_from: Option<SourceKind>,
+	/// Ключ установленного файла.
+	pub file: String,
+	pub optional: bool,
+}
+
+/// Что уже стоит в сборке: по каталогу установки, по индексу и по id модов в jar.
+struct Local<'a> {
+	installed: &'a HashMap<(SourceKind, String), String>,
+	index: &'a Index,
+	mod_ids: &'a HashMap<String, Vec<String>>,
+}
+
+impl Local<'_> {
+	/// Файл того же проекта из другого каталога: id мода совпал со slug зависимости
+	/// или совпали slug/название/автор записи индекса.
+	fn elsewhere(
+		&self,
+		hit: &ProjectHit,
+		kind: ProjectType,
+		folder: &str,
+	) -> Option<(String, Option<SourceKind>)> {
+		let slug = mod_id_norm(&hit.slug);
+		self.index.files.iter().find_map(|(key, entry)| {
+			if key.rsplit_once('/').map(|(f, _)| f) != Some(folder) {
+				return None;
+			}
+			let from = entry.source.as_ref().map(|s| s.kind);
+			if from == Some(hit.source) {
+				return None;
+			}
+			let by_id = kind == ProjectType::Mod
+				&& !slug.is_empty()
+				&& self
+					.mod_ids
+					.get(key)
+					.is_some_and(|ids| ids.iter().any(|id| mod_id_norm(id) == slug));
+			let by_meta = entry.source.as_ref().is_some_and(|s| same_meta(s, hit));
+			(by_id || by_meta).then(|| (key.clone(), from))
+		})
+	}
+}
+
+/// id мода и slug сравниваются без регистра, `_` и `-` — одно и то же.
+fn mod_id_norm(id: &str) -> String {
+	id.trim().to_ascii_lowercase().replace('_', "-")
+}
+
+/// Правило склейки из поиска «Все», но для записи индекса.
+fn same_meta(s: &SourceRef, hit: &ProjectHit) -> bool {
+	let filled = |a: Option<&str>, b: &str| {
+		let a = super::search_all::norm(a.unwrap_or_default());
+		!a.is_empty() && a == super::search_all::norm(b)
+	};
+	let slug = s
+		.slug
+		.as_deref()
+		.is_some_and(|x| !x.is_empty() && x.eq_ignore_ascii_case(&hit.slug));
+	let title = filled(s.title.as_deref(), &hit.title);
+	let author = filled(s.author.as_deref(), &hit.author);
+	(slug && (title || author)) || (title && author)
+}
+
+/// id модов в jar из `mods/` (ключ индекса → id). Читает файлы — вызывать вне async.
+pub fn local_mod_ids(game_dir: &Path, index: &Index) -> HashMap<String, Vec<String>> {
+	index
+		.files
+		.keys()
+		.filter(|k| k.starts_with("mods/") && k.to_ascii_lowercase().ends_with(".jar"))
+		.filter_map(|key| {
+			let path = [true, false]
+				.into_iter()
+				.filter_map(|on| installed::disk_path(game_dir, key, on).ok())
+				.find(|p| p.is_file())?;
+			let ids = installed::mod_ids(&path);
+			(!ids.is_empty()).then(|| (key.clone(), ids))
+		})
+		.collect()
 }
 
 impl InstallPlan {
@@ -241,6 +330,7 @@ pub async fn resolve(
 	instance: &Instance,
 	game_dir: &Path,
 	index: &Index,
+	mod_ids: &HashMap<String, Vec<String>>,
 	req: &InstallRequest,
 ) -> Result<InstallPlan, AppError> {
 	super::check_ref(&req.project_id)?;
@@ -335,6 +425,7 @@ pub async fn resolve(
 		missing: Vec::new(),
 		conflicts: Vec::new(),
 		already_installed,
+		elsewhere: Vec::new(),
 	};
 	// Загрузчик шейдеров — как обязательная зависимость; подходит уже стоящий из любого каталога.
 	let mut root = version;
@@ -349,14 +440,19 @@ pub async fn resolve(
 			kind: DependencyKind::Required,
 		});
 	}
-	resolve_dependencies(source, instance, &installed, &root, req, &mut plan).await?;
+	let local = Local {
+		installed: &installed,
+		index,
+		mod_ids,
+	};
+	resolve_dependencies(source, instance, &local, &root, req, &mut plan).await?;
 	Ok(plan)
 }
 
 async fn resolve_dependencies(
 	source: &dyn ContentSource,
 	instance: &Instance,
-	installed: &HashMap<(SourceKind, String), String>,
+	local: &Local<'_>,
 	root: &ContentVersion,
 	req: &InstallRequest,
 	plan: &mut InstallPlan,
@@ -433,10 +529,27 @@ async fn resolve_dependencies(
 		for (kind, project, version) in wanted {
 			// Каталог мог ответить по slug: дальше — настоящий id.
 			let project = hits.get(&project).map_or(project, |h| h.id.clone());
-			let installed_key = installed.get(&(req.source, project.clone()));
+			let installed_key = local.installed.get(&(req.source, project.clone()));
+			// Тот же проект из другого каталога считается установленным.
+			let elsewhere = match (installed_key, hits.get(&project)) {
+				(None, Some(hit)) => {
+					let dep_kind = dependency_type(hit);
+					folder_for(dep_kind, req.world.as_deref())
+						.ok()
+						.and_then(|folder| local.elsewhere(hit, dep_kind, &folder))
+						.map(|(file, from)| InstalledElsewhere {
+							project: hit.clone(),
+							installed_from: from,
+							file,
+							optional: kind == DependencyKind::Optional,
+						})
+				}
+				_ => None,
+			};
 			match kind {
 				DependencyKind::Incompatible => {
-					if let Some(key) = installed_key
+					let key = installed_key.or(elsewhere.as_ref().map(|e| &e.file));
+					if let Some(key) = key
 						&& !plan.conflicts.contains(key)
 						&& plan.target.replaces.as_ref() != Some(key)
 					{
@@ -444,16 +557,25 @@ async fn resolve_dependencies(
 					}
 				}
 				DependencyKind::Optional => {
-					if installed_key.is_none()
-						&& !seen.contains(&project)
-						&& optional_seen.insert(project.clone())
-						&& let Some(hit) = hits.get(&project)
-					{
+					if installed_key.is_some() || seen.contains(&project) {
+						continue;
+					}
+					if !optional_seen.insert(project.clone()) {
+						continue;
+					}
+					if let Some(found) = elsewhere {
+						plan.elsewhere.push(found);
+					} else if let Some(hit) = hits.get(&project) {
 						plan.optional.push(hit.clone());
 					}
 				}
 				DependencyKind::Required => {
 					if installed_key.is_some() || !seen.insert(project.clone()) {
+						continue;
+					}
+					if let Some(found) = elsewhere {
+						plan.elsewhere.retain(|e| e.project.id != found.project.id);
+						plan.elsewhere.push(found);
 						continue;
 					}
 					if plan.required.len() >= MAX_DEPENDENCIES {
@@ -493,11 +615,14 @@ async fn resolve_dependencies(
 	let required: HashSet<String> = plan.required.iter().map(|d| d.hit.id.clone()).collect();
 	plan.optional
 		.retain(|o| !required.contains(&o.id) && o.id != target);
+	plan.elsewhere
+		.retain(|e| !required.contains(&e.project.id) && e.project.id != target);
 	Ok(())
 }
 
 /// План обновления по найденным обновлениям (`instance_content_updates`). `keys` — какие файлы,
-/// `None` — все с обновлением. Сеть: версии пачкой.
+/// `None` — все с обновлением. Берутся файлы, чьё обновление ставится из каталога `kind`: своего
+/// или найденного подстраховкой (`via`). Сеть: версии пачкой, проекты подстраховки пачкой.
 pub async fn plan_update(
 	source: &dyn ContentSource,
 	kind: SourceKind,
@@ -509,59 +634,294 @@ pub async fn plan_update(
 		.iter()
 		.filter(|(key, _)| keys.is_none_or(|k| k.contains(key)))
 		.filter_map(|(key, e)| {
-			let s = e.source.as_ref().filter(|s| s.kind == kind)?;
-			Some((key, e, s, e.update.as_ref()?))
+			let s = e.source.as_ref()?;
+			let u = e.update.as_ref().filter(|u| u.catalog(s) == kind)?;
+			Some((key, e, s, u))
 		})
 		.collect();
 	if chosen.is_empty() {
 		return Ok(Vec::new());
 	}
 	let ids: Vec<String> = chosen.iter().map(|(.., u)| u.version_id.clone()).collect();
-	let versions: HashMap<String, ContentVersion> = source
-		.versions(&ids)
-		.await?
-		.into_iter()
-		.map(|v| (v.id.clone(), v))
+	let mut foreign: Vec<String> = chosen
+		.iter()
+		.filter(|(.., u)| u.via.is_some())
+		.filter_map(|(.., u)| u.via_project_id.clone())
 		.collect();
+	foreign.sort();
+	foreign.dedup();
+	// Своим проектам без настоящего slug он берётся из каталога; не ответил — slug пустой.
+	let mut unslugged: Vec<String> = chosen
+		.iter()
+		.filter(|(.., s, u)| u.via.is_none() && !has_slug(s))
+		.map(|(.., s, _)| s.project_id.clone())
+		.collect();
+	unslugged.sort();
+	unslugged.dedup();
+	let (versions, hits, own) = tokio::join!(
+		source.versions(&ids),
+		project_hits(source, &foreign),
+		project_hits(source, &unslugged)
+	);
+	let versions: HashMap<String, ContentVersion> =
+		versions?.into_iter().map(|v| (v.id.clone(), v)).collect();
+	let hits = hits?;
+	let own = own.unwrap_or_else(|err| {
+		log::warn!("slug проектов обновления: {:?}", err.code);
+		HashMap::new()
+	});
 	let mut items = Vec::new();
 	for (key, entry, src, update) in chosen {
 		let Some(version) = versions.get(&update.version_id) else {
 			continue;
 		};
-		let (kind, _) = installed::parse_key(key)?;
-		let folder = key.rsplit_once('/').map(|(f, _)| f).unwrap_or_default();
-		let hit = ProjectHit {
-			source: src.kind,
-			id: src.project_id.clone(),
-			slug: src.project_id.clone(),
-			project_type: kind,
-			title: src.title.clone().unwrap_or_else(|| src.project_id.clone()),
-			author: src.author.clone().unwrap_or_default(),
-			description: String::new(),
-			icon_url: src.icon_url.clone(),
-			downloads: 0,
-			follows: None,
-			site_only: version.site_only,
-			url: super::project_url(src.kind, &src.project_id),
-			categories: Vec::new(),
-			updated_at: 0,
-			game_versions: Vec::new(),
-			loaders: Vec::new(),
-			client_side: super::Side::Unknown,
-			server_side: super::Side::Unknown,
-			install: None,
-			also_on: Vec::new(),
-			created_at: 0,
-		};
-		match planned(&hit, kind, version, folder, entry.dependency) {
-			Ok(mut item) => {
-				item.replaces = Some(key.clone());
-				items.push(item);
+		let (project_type, _) = installed::parse_key(key)?;
+		let hit = match (update.via, update.via_project_id.as_ref()) {
+			(Some(via), Some(id)) => hits
+				.get(id)
+				.cloned()
+				.map(|mut h| {
+					h.project_type = project_type;
+					h
+				})
+				.unwrap_or_else(|| update_hit(via, id, None, src, project_type)),
+			(Some(_), None) => continue,
+			(None, _) => {
+				let slug = if has_slug(src) {
+					src.slug.as_deref()
+				} else {
+					own.get(&src.project_id)
+						.map(|h| h.slug.as_str())
+						.filter(|s| !s.is_empty())
+				};
+				update_hit(src.kind, &src.project_id, slug, src, project_type)
 			}
+		};
+		match planned_replacement(&hit, project_type, version, key, entry) {
+			Ok(item) => items.push(item),
 			Err(err) => log::warn!("обновление {key} пропущено: {:?}", err.details),
 		}
 	}
 	Ok(items)
+}
+
+/// Настоящий slug: не пустой и не id проекта (так его записывали старые обновления).
+fn has_slug(s: &SourceRef) -> bool {
+	s.slug
+		.as_deref()
+		.is_some_and(|x| !x.is_empty() && x != s.project_id)
+}
+
+/// Проекты по id одной пачкой (пусто — без запроса).
+async fn project_hits(
+	source: &dyn ContentSource,
+	ids: &[String],
+) -> Result<HashMap<String, ProjectHit>, AppError> {
+	if ids.is_empty() {
+		return Ok(HashMap::new());
+	}
+	Ok(source
+		.projects(ids)
+		.await?
+		.into_iter()
+		.map(|h| (h.id.clone(), h))
+		.collect())
+}
+
+/// Проект обновления из того, что известно по индексу (каталог проект не отдал).
+fn update_hit(
+	kind: SourceKind,
+	id: &str,
+	slug: Option<&str>,
+	src: &SourceRef,
+	project_type: ProjectType,
+) -> ProjectHit {
+	ProjectHit {
+		source: kind,
+		id: id.to_owned(),
+		slug: slug.unwrap_or_default().to_owned(),
+		project_type,
+		title: src.title.clone().unwrap_or_else(|| id.to_owned()),
+		author: src.author.clone().unwrap_or_default(),
+		description: String::new(),
+		icon_url: src.icon_url.clone(),
+		downloads: 0,
+		follows: None,
+		site_only: false,
+		url: super::project_url(kind, id),
+		categories: Vec::new(),
+		updated_at: 0,
+		game_versions: Vec::new(),
+		loaders: Vec::new(),
+		client_side: super::Side::Unknown,
+		server_side: super::Side::Unknown,
+		install: None,
+		also_on: Vec::new(),
+		created_at: 0,
+	}
+}
+
+/// Новая версия на место установленного файла `key`.
+fn planned_replacement(
+	hit: &ProjectHit,
+	project_type: ProjectType,
+	version: &ContentVersion,
+	key: &str,
+	entry: &Entry,
+) -> Result<PlannedItem, AppError> {
+	let mut hit = hit.clone();
+	hit.site_only = version.site_only;
+	let folder = key.rsplit_once('/').map(|(f, _)| f).unwrap_or_default();
+	let mut item = planned(&hit, project_type, version, folder, entry.dependency)?;
+	item.replaces = Some(key.to_owned());
+	Ok(item)
+}
+
+/// Файл не ответившего каталога в другом: версия там сейчас и последняя подходящая
+/// (`None` — подходящей для сборки нет).
+#[derive(Debug, Clone)]
+pub struct Covered {
+	pub current: ContentVersion,
+	pub latest: Option<ContentVersion>,
+}
+
+impl Covered {
+	/// Обновление оттуда, если последняя версия не та, что стоит.
+	pub fn update(&self) -> Option<UpdateInfo> {
+		let v = self.newer()?;
+		Some(UpdateInfo {
+			version_id: v.id.clone(),
+			version_number: v.version_number.clone(),
+			site_only: v.site_only,
+			via: Some(v.source),
+			via_project_id: Some(v.project_id.clone()),
+		})
+	}
+
+	fn newer(&self) -> Option<&ContentVersion> {
+		self.latest.as_ref().filter(|v| v.id != self.current.id)
+	}
+}
+
+/// Подстраховка: файлы не ответившего каталога (ключ индекса и [`FileKey`] с sha1 и отпечатком)
+/// опознаются в `alt` и проверяются там же — по запросу пачкой на опознание и на последние версии
+/// каждого типа. Файлов, которых в `alt` нет, в ответе нет.
+pub async fn fallback_latest(
+	alt: &dyn ContentSource,
+	instance: &Instance,
+	files: &[(String, FileKey)],
+) -> Result<HashMap<String, Covered>, AppError> {
+	if files.is_empty() {
+		return Ok(HashMap::new());
+	}
+	let keys: Vec<FileKey> = files
+		.iter()
+		.map(|(_, k)| FileKey {
+			project_id: None,
+			..k.clone()
+		})
+		.collect();
+	let found = alt.identify(&keys).await?;
+	let mut groups: HashMap<ProjectType, Vec<FileKey>> = HashMap::new();
+	for (key, k) in files {
+		let (Some(v), Ok((kind, _))) = (found.get(&k.sha1), installed::parse_key(key)) else {
+			continue;
+		};
+		groups.entry(kind).or_default().push(FileKey {
+			project_id: Some(v.project_id.clone()),
+			..k.clone()
+		});
+	}
+	let mut latest = HashMap::new();
+	for (kind, keys) in groups {
+		let filter = update_filter(instance, kind);
+		latest.extend(alt.latest(&keys, &filter).await?);
+	}
+	Ok(files
+		.iter()
+		.filter_map(|(key, k)| {
+			let current = found.get(&k.sha1)?.clone();
+			let latest = latest
+				.get(&k.sha1)
+				.filter(|v| v.project_id == current.project_id && v.source == current.source)
+				.cloned();
+			Some((key.clone(), Covered { current, latest }))
+		})
+		.collect())
+}
+
+/// План обновления через подстраховку: что в `alt` новее, ставится оттуда (источник файла
+/// меняется на `alt`). Второе значение — сколько файлов нашлось и проверено в `alt`.
+pub async fn plan_fallback(
+	alt: &dyn ContentSource,
+	instance: &Instance,
+	index: &Index,
+	files: &[(String, FileKey)],
+) -> Result<(Vec<PlannedItem>, usize), AppError> {
+	let covered = fallback_latest(alt, instance, files).await?;
+	let mut ids: Vec<String> = covered
+		.values()
+		.filter_map(|c| Some(c.newer()?.project_id.clone()))
+		.collect();
+	ids.sort();
+	ids.dedup();
+	let hits = project_hits(alt, &ids).await?;
+	let mut items = Vec::new();
+	for (key, _) in files {
+		let Some(version) = covered.get(key).and_then(Covered::newer) else {
+			continue;
+		};
+		let Some((entry, src)) = index
+			.files
+			.get(key)
+			.and_then(|e| Some((e, e.source.as_ref()?)))
+		else {
+			continue;
+		};
+		let (project_type, _) = installed::parse_key(key)?;
+		let hit = hits
+			.get(&version.project_id)
+			.cloned()
+			.map(|mut h| {
+				h.project_type = project_type;
+				h
+			})
+			.unwrap_or_else(|| {
+				update_hit(version.source, &version.project_id, None, src, project_type)
+			});
+		match planned_replacement(&hit, project_type, version, key, entry) {
+			Ok(item) => items.push(item),
+			Err(err) => log::warn!("обновление {key} пропущено: {:?}", err.details),
+		}
+	}
+	Ok((items, covered.len()))
+}
+
+/// Записывает итог подстраховки: ключ → обновление из другого каталога (`None` — новее там нет).
+/// Новые отпечатки CurseForge запоминаются.
+pub fn apply_fallback(
+	index: &mut Index,
+	covered: &HashMap<String, Option<UpdateInfo>>,
+	fingerprints: &HashMap<String, u32>,
+) {
+	for (key, entry) in index.files.iter_mut() {
+		if entry.fingerprint.is_none()
+			&& let Some(fp) = fingerprints.get(&entry.sha1)
+		{
+			entry.fingerprint = Some(*fp);
+		}
+		if entry.source.is_none() {
+			continue;
+		}
+		match covered.get(key) {
+			Some(Some(update)) => entry.update = Some(update.clone()),
+			// Во втором новее нет: прежнее обновление оттуда устарело, своё не трогаем.
+			Some(None) if entry.update.as_ref().is_some_and(|u| u.via.is_some()) => {
+				entry.update = None;
+			}
+			_ => {}
+		}
+	}
 }
 
 /// Фильтр «последних версий» для проверки обновлений: у шейдеров загрузчик нужен явно.
@@ -727,6 +1087,7 @@ pub fn apply(
 					icon_url: item.hit.icon_url.clone(),
 					version_number: Some(item.version_number.clone()),
 					author: Some(item.hit.author.clone()).filter(|a| !a.is_empty()),
+					slug: Some(item.hit.slug.clone()).filter(|s| !s.is_empty()),
 				}),
 				checked_at: None,
 				update: None,
@@ -772,6 +1133,7 @@ pub fn apply_identified(
 					icon_url: None,
 					version_number: Some(version.version_number.clone()),
 					author: None,
+					slug: None,
 				});
 				entry.checked_at = None;
 				changed = true;
@@ -781,13 +1143,22 @@ pub fn apply_identified(
 			}
 		}
 		if let Some(source) = entry.source.as_mut()
-			&& (source.title.is_none() || source.author.is_none())
 			&& let Some(hit) = hits.get(&(source.kind, source.project_id.clone()))
 		{
-			source.title = Some(hit.title.clone());
-			source.icon_url = hit.icon_url.clone();
-			source.author = Some(hit.author.clone());
-			changed = true;
+			if source.title.is_none() || source.author.is_none() {
+				source.title = Some(hit.title.clone());
+				source.icon_url = hit.icon_url.clone();
+				source.author = Some(hit.author.clone());
+				changed = true;
+			}
+			// Старые обновления писали в slug id проекта — заменяется настоящим.
+			if !has_slug(source)
+				&& !hit.slug.is_empty()
+				&& source.slug.as_deref() != Some(&hit.slug)
+			{
+				source.slug = Some(hit.slug.clone());
+				changed = true;
+			}
 		}
 	}
 	changed
@@ -817,6 +1188,8 @@ pub fn apply_updates(
 				version_id: v.id.clone(),
 				version_number: v.version_number.clone(),
 				site_only: v.site_only,
+				via: None,
+				via_project_id: None,
 			});
 	}
 }
@@ -824,7 +1197,6 @@ pub fn apply_updates(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::content::FileKey;
 	use crate::content::tests::instance;
 	use crate::content::{
 		BoxFuture, CategoryTag, Dependency, Project, SearchPage, SearchQuery, Side, VersionChannel,
@@ -885,6 +1257,7 @@ mod tests {
 	/// Каталог в памяти: проекты и их версии (новые первыми).
 	#[derive(Default)]
 	struct Fake {
+		source: SourceKind,
 		projects: HashMap<String, Vec<ContentVersion>>,
 		types: HashMap<String, ProjectType>,
 		requests: Mutex<Vec<String>>,
@@ -918,7 +1291,11 @@ mod tests {
 				Ok(ids
 					.iter()
 					.filter(|id| self.projects.contains_key(*id))
-					.map(|id| hit(id, *self.types.get(id).unwrap_or(&ProjectType::Mod)))
+					.map(|id| {
+						let mut h = hit(id, *self.types.get(id).unwrap_or(&ProjectType::Mod));
+						h.source = self.source;
+						h
+					})
 					.collect())
 			})
 		}
@@ -986,6 +1363,7 @@ mod tests {
 				icon_url: None,
 				version_number: None,
 				author: None,
+				slug: None,
 			}),
 			..Entry::default()
 		}
@@ -1020,9 +1398,16 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let fabric = instance(LoaderKind::Fabric, "1.20.1");
 		let mut index = Index::default();
-		let plan = resolve(&fake, &fabric, dir.path(), &index, &request("sodium"))
-			.await
-			.unwrap();
+		let plan = resolve(
+			&fake,
+			&fabric,
+			dir.path(),
+			&index,
+			&HashMap::new(),
+			&request("sodium"),
+		)
+		.await
+		.unwrap();
 		assert_eq!(plan.target.key(), "mods/sodium-s2.jar");
 		assert!(!plan.already_installed && plan.conflicts.is_empty());
 		let deps: Vec<&str> = plan.required.iter().map(|d| d.hit.id.as_str()).collect();
@@ -1037,7 +1422,7 @@ mod tests {
 		// Выбранная необязательная зависимость ставится.
 		let mut req = request("sodium");
 		req.optional = vec!["indium".into()];
-		let plan = resolve(&fake, &fabric, dir.path(), &index, &req)
+		let plan = resolve(&fake, &fabric, dir.path(), &index, &HashMap::new(), &req)
 			.await
 			.unwrap();
 		assert!(plan.required.iter().any(|d| d.hit.id == "indium"));
@@ -1054,9 +1439,16 @@ mod tests {
 			"mods/sodium-old.jar".into(),
 			installed_entry("sodium", "s1"),
 		);
-		let plan = resolve(&fake, &fabric, dir.path(), &index, &request("sodium"))
-			.await
-			.unwrap();
+		let plan = resolve(
+			&fake,
+			&fabric,
+			dir.path(),
+			&index,
+			&HashMap::new(),
+			&request("sodium"),
+		)
+		.await
+		.unwrap();
 		assert!(plan.required.is_empty());
 		assert_eq!(plan.target.replaces.as_deref(), Some("mods/sodium-old.jar"));
 		assert_eq!(plan.conflicts, vec!["mods/of.jar".to_owned()]);
@@ -1066,41 +1458,194 @@ mod tests {
 			.files
 			.insert("mods/sodium-s2.jar".into(), installed_entry("sodium", "s2"));
 		index.files.remove("mods/sodium-old.jar");
-		let plan = resolve(&fake, &fabric, dir.path(), &index, &request("sodium"))
-			.await
-			.unwrap();
+		let plan = resolve(
+			&fake,
+			&fabric,
+			dir.path(),
+			&index,
+			&HashMap::new(),
+			&request("sodium"),
+		)
+		.await
+		.unwrap();
 		assert!(plan.already_installed && plan.items().is_empty());
 
 		// Нет версии под загрузчик; моды в ванильную сборку; чужая версия; нет проекта; нет мира.
-		let err = resolve(&fake, &fabric, dir.path(), &index, &request("forgeonly"))
-			.await
-			.unwrap_err();
+		let err = resolve(
+			&fake,
+			&fabric,
+			dir.path(),
+			&index,
+			&HashMap::new(),
+			&request("forgeonly"),
+		)
+		.await
+		.unwrap_err();
 		assert_eq!(err.code, ErrorCode::ContentIncompatible);
 		let vanilla = instance(LoaderKind::Vanilla, "1.20.1");
-		let err = resolve(&fake, &vanilla, dir.path(), &index, &request("sodium"))
-			.await
-			.unwrap_err();
+		let err = resolve(
+			&fake,
+			&vanilla,
+			dir.path(),
+			&index,
+			&HashMap::new(),
+			&request("sodium"),
+		)
+		.await
+		.unwrap_err();
 		assert_eq!(
 			(err.code, err.details.as_deref()),
 			(ErrorCode::ContentIncompatible, Some("needs_loader"))
 		);
 		let mut req = request("sodium");
 		req.version_id = Some("f1".into());
-		let err = resolve(&fake, &fabric, dir.path(), &index, &req)
+		let err = resolve(&fake, &fabric, dir.path(), &index, &HashMap::new(), &req)
 			.await
 			.unwrap_err();
 		assert_eq!(err.code, ErrorCode::InvalidValue);
-		let err = resolve(&fake, &fabric, dir.path(), &index, &request("none"))
-			.await
-			.unwrap_err();
+		let err = resolve(
+			&fake,
+			&fabric,
+			dir.path(),
+			&index,
+			&HashMap::new(),
+			&request("none"),
+		)
+		.await
+		.unwrap_err();
 		assert_eq!(err.code, ErrorCode::ContentNotFound);
 		let mut req = request("sodium");
 		req.project_type = Some(ProjectType::Datapack);
 		req.world = Some("Нет такого".into());
-		let err = resolve(&fake, &fabric, dir.path(), &index, &req)
+		let err = resolve(&fake, &fabric, dir.path(), &index, &HashMap::new(), &req)
 			.await
 			.unwrap_err();
 		assert_eq!(err.code, ErrorCode::FileNotFound);
+	}
+
+	fn jar(path: &Path, mod_id: &str) {
+		use std::io::Write;
+		std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+		let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+		zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+			.unwrap();
+		write!(zip, r#"{{"id":"{mod_id}"}}"#).unwrap();
+		zip.finish().unwrap();
+	}
+
+	#[tokio::test]
+	async fn dependency_from_other_catalog_counts_as_installed() {
+		use DependencyKind::*;
+		let mut fake = Fake {
+			source: SourceKind::Curseforge,
+			..Fake::default()
+		};
+		fake.add(version(
+			"create-fabric",
+			"c1",
+			&[
+				("fabric-api", Required),
+				("cloth-config", Required),
+				("sodium", Required),
+				("modmenu", Optional),
+			],
+		));
+		fake.add(version("fabric-api", "f1", &[]));
+		fake.add(version("cloth-config", "cc1", &[]));
+		fake.add(version("sodium", "s1", &[]));
+		fake.add(version("modmenu", "mm1", &[]));
+
+		let dir = tempfile::tempdir().unwrap();
+		let fabric = instance(LoaderKind::Fabric, "1.20.1");
+		let mut index = Index::default();
+		// Fabric API с Modrinth старой записью (без slug и названия): узнаётся по id мода в jar.
+		jar(&dir.path().join("mods/fabric-api-0.92.jar"), "fabric-api");
+		index.files.insert(
+			"mods/fabric-api-0.92.jar".into(),
+			installed_entry("P7dR8mSH", "mr1"),
+		);
+		// Cloth Config с Modrinth: slug и автор совпали.
+		let mut cloth = installed_entry("9s6osm5g", "mr2");
+		if let Some(s) = cloth.source.as_mut() {
+			s.slug = Some("cloth-config".into());
+			s.title = Some("Cloth Config v13".into());
+			s.author = Some("me".into());
+		}
+		index.files.insert("mods/cloth-config.jar".into(), cloth);
+		// Только slug — мало: Sodium ставится.
+		let mut other = installed_entry("AANobbMI", "mr3");
+		if let Some(s) = other.source.as_mut() {
+			s.slug = Some("sodium".into());
+			s.title = Some("Another".into());
+			s.author = Some("someone".into());
+		}
+		index.files.insert("mods/other.jar".into(), other);
+		// Mod Menu добавлен файлом.
+		jar(&dir.path().join("mods/modmenu.jar"), "modmenu");
+		index
+			.files
+			.insert("mods/modmenu.jar".into(), Entry::default());
+
+		let mod_ids = local_mod_ids(dir.path(), &index);
+		let req: InstallRequest = serde_json::from_value(serde_json::json!({
+			"projectId": "create-fabric",
+			"source": "curseforge",
+		}))
+		.unwrap();
+		let plan = resolve(&fake, &fabric, dir.path(), &index, &mod_ids, &req)
+			.await
+			.unwrap();
+		let required: Vec<&str> = plan.required.iter().map(|i| i.hit.id.as_str()).collect();
+		assert_eq!(required, ["sodium"]);
+		assert!(plan.optional.is_empty());
+		let elsewhere: Vec<(&str, Option<SourceKind>, &str, bool)> = plan
+			.elsewhere
+			.iter()
+			.map(|e| {
+				(
+					e.project.id.as_str(),
+					e.installed_from,
+					e.file.as_str(),
+					e.optional,
+				)
+			})
+			.collect();
+		assert_eq!(
+			elsewhere,
+			[
+				(
+					"fabric-api",
+					Some(SourceKind::Modrinth),
+					"mods/fabric-api-0.92.jar",
+					false
+				),
+				(
+					"cloth-config",
+					Some(SourceKind::Modrinth),
+					"mods/cloth-config.jar",
+					false
+				),
+				("modmenu", None, "mods/modmenu.jar", true),
+			]
+		);
+		let asked = fake.requests.lock().unwrap().clone();
+		assert!(!asked.iter().any(|r| r.contains("fabric-api")));
+
+		// Из того же каталога копия не «другая»: Modrinth-установка видит её как обычную.
+		let mr = Fake {
+			source: SourceKind::Modrinth,
+			..std::mem::take(&mut fake)
+		};
+		let mut req = req;
+		req.source = SourceKind::Modrinth;
+		let plan = resolve(&mr, &fabric, dir.path(), &index, &mod_ids, &req)
+			.await
+			.unwrap();
+		assert!(
+			plan.elsewhere
+				.iter()
+				.all(|e| e.project.id != "cloth-config")
+		);
 	}
 
 	#[tokio::test]
@@ -1119,6 +1664,7 @@ mod tests {
 			&fabric,
 			dir.path(),
 			&Index::default(),
+			&HashMap::new(),
 			&request("bsl"),
 		)
 		.await
@@ -1136,9 +1682,16 @@ mod tests {
 			"mods/iris.jar".into(),
 			installed_entry(crate::content::modrinth::IRIS_ID, "iris0"),
 		);
-		let plan = resolve(&fake, &fabric, dir.path(), &index, &request("bsl"))
-			.await
-			.unwrap();
+		let plan = resolve(
+			&fake,
+			&fabric,
+			dir.path(),
+			&index,
+			&HashMap::new(),
+			&request("bsl"),
+		)
+		.await
+		.unwrap();
 		assert!(plan.required.is_empty());
 	}
 
@@ -1258,6 +1811,8 @@ mod tests {
 			version_id: "2".into(),
 			version_number: "2".into(),
 			site_only: false,
+			via: None,
+			via_project_id: None,
 		});
 		index.files.insert("mods/a-1.jar".into(), e);
 		index
@@ -1278,5 +1833,256 @@ mod tests {
 		.await
 		.unwrap();
 		assert!(none.is_empty());
+	}
+
+	/// Второй каталог для подстраховки (как CurseForge): узнаёт файл по отпечатку и sha1,
+	/// последние версии — по проекту с учётом фильтра сборки.
+	#[derive(Default)]
+	struct Alt {
+		/// Отпечаток, sha1 и версия, что сейчас стоит.
+		files: Vec<(u32, String, ContentVersion)>,
+		/// Версии проектов, новые первыми.
+		projects: HashMap<String, Vec<ContentVersion>>,
+		calls: Mutex<Vec<&'static str>>,
+	}
+
+	impl ContentSource for Alt {
+		fn search<'a>(&'a self, _: &'a SearchQuery) -> BoxFuture<'a, SearchPage> {
+			no()
+		}
+		fn project<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Project> {
+			no()
+		}
+		fn projects<'a>(&'a self, ids: &'a [String]) -> BoxFuture<'a, Vec<ProjectHit>> {
+			Box::pin(async move {
+				self.calls.lock().unwrap().push("projects");
+				Ok(ids
+					.iter()
+					.filter(|id| self.projects.contains_key(*id))
+					.map(|id| {
+						let mut h = hit(id, ProjectType::Mod);
+						h.source = SourceKind::Curseforge;
+						h.slug = format!("slug-{id}");
+						h
+					})
+					.collect())
+			})
+		}
+		fn project_versions<'a>(
+			&'a self,
+			_: &'a str,
+			_: &'a VersionFilter,
+		) -> BoxFuture<'a, Vec<ContentVersion>> {
+			no()
+		}
+		fn version<'a>(&'a self, _: &'a str) -> BoxFuture<'a, ContentVersion> {
+			no()
+		}
+		fn versions<'a>(&'a self, ids: &'a [String]) -> BoxFuture<'a, Vec<ContentVersion>> {
+			Box::pin(async move {
+				Ok(self
+					.projects
+					.values()
+					.flatten()
+					.filter(|v| ids.contains(&v.id))
+					.cloned()
+					.collect())
+			})
+		}
+		fn categories(&self) -> BoxFuture<'_, (Vec<CategoryTag>, bool)> {
+			no()
+		}
+		fn identify<'a>(
+			&'a self,
+			keys: &'a [FileKey],
+		) -> BoxFuture<'a, HashMap<String, ContentVersion>> {
+			Box::pin(async move {
+				self.calls.lock().unwrap().push("identify");
+				Ok(keys
+					.iter()
+					.filter_map(|k| {
+						let (_, _, v) = self
+							.files
+							.iter()
+							.find(|(fp, sha1, _)| Some(*fp) == k.fingerprint && *sha1 == k.sha1)?;
+						Some((k.sha1.clone(), v.clone()))
+					})
+					.collect())
+			})
+		}
+		fn latest<'a>(
+			&'a self,
+			keys: &'a [FileKey],
+			filter: &'a VersionFilter,
+		) -> BoxFuture<'a, HashMap<String, ContentVersion>> {
+			Box::pin(async move {
+				self.calls.lock().unwrap().push("latest");
+				Ok(keys
+					.iter()
+					.filter_map(|k| {
+						let list = self.projects.get(k.project_id.as_deref()?)?;
+						let v = list.iter().find(|v| filter.matches(v))?;
+						Some((k.sha1.clone(), v.clone()))
+					})
+					.collect())
+			})
+		}
+	}
+
+	fn cf_version(project: &str, id: &str, game: &str) -> ContentVersion {
+		let mut v = version(project, id, &[]);
+		v.source = SourceKind::Curseforge;
+		v.game_versions = vec![game.into()];
+		v.files[0].url = format!("https://edge.forgecdn.net/{id}.jar");
+		v
+	}
+
+	/// Файл с Modrinth `mods/a-1.jar`, его отпечаток 7; на CurseForge он — проект 100.
+	fn fallback_setup() -> (Alt, Index, Vec<(String, FileKey)>) {
+		let sha1 = "aa".repeat(20);
+		let mut alt = Alt::default();
+		alt.files
+			.push((7, sha1.clone(), cf_version("100", "cf1", "1.20.1")));
+		alt.projects.insert(
+			"100".into(),
+			vec![
+				cf_version("100", "cf3", "1.21.1"),
+				cf_version("100", "cf2", "1.20.1"),
+				cf_version("100", "cf1", "1.20.1"),
+			],
+		);
+		let mut index = Index::default();
+		let mut e = installed_entry("a", "1");
+		e.sha1 = sha1.clone();
+		e.update = Some(UpdateInfo {
+			version_id: "2".into(),
+			version_number: "2".into(),
+			site_only: false,
+			via: None,
+			via_project_id: None,
+		});
+		index.files.insert("mods/a-1.jar".into(), e);
+		let files = vec![(
+			"mods/a-1.jar".to_owned(),
+			FileKey {
+				sha1,
+				fingerprint: Some(7),
+				project_id: None,
+			},
+		)];
+		(alt, index, files)
+	}
+
+	#[tokio::test]
+	async fn fallback_finds_update_on_other_catalog() {
+		let (alt, mut index, files) = fallback_setup();
+		let inst = instance(LoaderKind::Fabric, "1.20.1");
+		let covered = fallback_latest(&alt, &inst, &files).await.unwrap();
+		// Одна пачка на опознание и одна на последние версии.
+		assert_eq!(*alt.calls.lock().unwrap(), ["identify", "latest"]);
+		// cf3 — для другой версии игры: обновление — cf2.
+		let update = covered["mods/a-1.jar"].update().unwrap();
+		assert_eq!(update.version_id, "cf2");
+		assert_eq!(update.via, Some(SourceKind::Curseforge));
+		assert_eq!(update.via_project_id.as_deref(), Some("100"));
+
+		let found = HashMap::from([("mods/a-1.jar".to_owned(), Some(update))]);
+		apply_fallback(&mut index, &found, &HashMap::from([("aa".repeat(20), 7)]));
+		let entry = &index.files["mods/a-1.jar"];
+		assert_eq!(entry.fingerprint, Some(7));
+		assert_eq!(
+			entry.update.as_ref().unwrap().via,
+			Some(SourceKind::Curseforge)
+		);
+		// Свой источник у файла прежний.
+		assert_eq!(entry.source.as_ref().unwrap().kind, SourceKind::Modrinth);
+
+		// Обновление ставит второй каталог, у Modrinth в плане его нет.
+		let modrinth = Fake::default();
+		let none = plan_update(&modrinth, SourceKind::Modrinth, &index, None)
+			.await
+			.unwrap();
+		assert!(none.is_empty());
+		let items = plan_update(&alt, SourceKind::Curseforge, &index, None)
+			.await
+			.unwrap();
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].hit.source, SourceKind::Curseforge);
+		assert_eq!(items[0].hit.id, "100");
+		assert_eq!(items[0].replaces.as_deref(), Some("mods/a-1.jar"));
+
+		// Установка меняет источник файла на CurseForge (со slug).
+		let dir = tempfile::tempdir().unwrap();
+		let staging = dir.path().join(".content-tmp-1");
+		std::fs::create_dir_all(&staging).unwrap();
+		std::fs::write(staging.join("0"), b"new").unwrap();
+		apply(dir.path(), &staging, &mut index, &items, &[]).unwrap();
+		assert!(!index.files.contains_key("mods/a-1.jar"));
+		let entry = &index.files["mods/100-cf2.jar"];
+		let src = entry.source.as_ref().unwrap();
+		assert_eq!(src.kind, SourceKind::Curseforge);
+		assert_eq!(
+			(src.project_id.as_str(), src.version_id.as_str()),
+			("100", "cf2")
+		);
+		assert_eq!(src.slug.as_deref(), Some("slug-100"));
+		assert!(entry.update.is_none());
+	}
+
+	#[tokio::test]
+	async fn fallback_plans_install_from_other_catalog() {
+		let (alt, index, files) = fallback_setup();
+		let inst = instance(LoaderKind::Fabric, "1.20.1");
+		let (items, found) = plan_fallback(&alt, &inst, &index, &files).await.unwrap();
+		assert_eq!(found, 1);
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].version_id, "cf2");
+		assert_eq!(items[0].hit.source, SourceKind::Curseforge);
+		assert_eq!(items[0].hit.slug, "slug-100");
+		assert_eq!(items[0].replaces.as_deref(), Some("mods/a-1.jar"));
+	}
+
+	#[tokio::test]
+	async fn fallback_misses_unknown_files() {
+		let (mut alt, index, mut files) = fallback_setup();
+		let inst = instance(LoaderKind::Fabric, "1.20.1");
+		// Отпечаток совпал, sha1 — нет: это другой файл.
+		alt.files[0].1 = "bb".repeat(20);
+		let covered = fallback_latest(&alt, &inst, &files).await.unwrap();
+		assert!(covered.is_empty());
+		// Нечего проверять — последние версии не спрашиваются.
+		assert_eq!(*alt.calls.lock().unwrap(), ["identify"]);
+		let (items, found) = plan_fallback(&alt, &inst, &index, &files).await.unwrap();
+		assert!(items.is_empty() && found == 0);
+
+		// Нашёлся, но новее нет: проверен, обновления нет.
+		alt.files[0].1 = files[0].1.sha1.clone();
+		alt.projects
+			.get_mut("100")
+			.unwrap()
+			.retain(|v| v.id != "cf2");
+		let covered = fallback_latest(&alt, &inst, &files).await.unwrap();
+		assert!(covered["mods/a-1.jar"].update().is_none());
+		// Своё обновление (с Modrinth) при этом остаётся.
+		let mut index = index;
+		let none = HashMap::from([("mods/a-1.jar".to_owned(), None)]);
+		apply_fallback(&mut index, &none, &HashMap::new());
+		assert_eq!(
+			index.files["mods/a-1.jar"]
+				.update
+				.as_ref()
+				.unwrap()
+				.version_id,
+			"2"
+		);
+
+		// Без отпечатка CurseForge файл не узнаёт.
+		files[0].1.fingerprint = None;
+		assert!(
+			fallback_latest(&alt, &inst, &files)
+				.await
+				.unwrap()
+				.is_empty()
+		);
 	}
 }

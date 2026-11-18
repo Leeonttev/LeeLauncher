@@ -53,6 +53,8 @@ export type ProcessInfo = {
 	account: GameAccountInfo | null;
 	/** Аккаунт прислало ядро. Старое ядро его не шлёт — тогда ник не показываем и о втором запуске не спрашиваем. */
 	coreAccount: boolean;
+	/** Запущена прошлым экземпляром лаунчера: лога нет. */
+	recovered?: boolean;
 };
 
 export type InstancesStore = {
@@ -76,6 +78,8 @@ export type LastExit = {
 	at: number;
 	durationSecs: number;
 	account: GameAccountInfo | null;
+	/** Игра прошлого экземпляра лаунчера: её лога нет. */
+	recovered: boolean;
 };
 
 let state: InstancesStore = {
@@ -208,6 +212,7 @@ function onProcess(event: InstanceProcessEvent) {
 					startedAt: current?.startedAt ?? Date.now(),
 					account: event.account ?? null,
 					coreAccount: Boolean(event.account),
+					recovered: current?.recovered,
 				},
 			},
 			progress: without(state.progress, id),
@@ -232,6 +237,7 @@ function onProcess(event: InstanceProcessEvent) {
 						at: Date.now(),
 						durationSecs: seconds,
 						account,
+						recovered: current?.recovered === true,
 					},
 				}
 			: state.lastExits,
@@ -299,6 +305,7 @@ async function restoreRunning() {
 				startedAt: Number.isNaN(startedAt) ? Date.now() : startedAt,
 				account: game.account ?? null,
 				coreAccount: Boolean(game.account),
+				recovered: game.recovered === true,
 			};
 		}
 		set({ processes });
@@ -740,7 +747,12 @@ export type InstanceDialogs = {
 	instanceId: string | null;
 	/** Меняется при каждом открытии: содержимое диалога начинается заново. */
 	session: number;
-	crash: { exitCode: number | null; lines: string[]; account: GameAccountInfo | null } | null;
+	crash: {
+		exitCode: number | null;
+		lines: string[];
+		account: GameAccountInfo | null;
+		recovered: boolean;
+	} | null;
 	leaveAfterRemove: boolean;
 	returnFocus: HTMLElement | null;
 	createPreset: CreatePreset | null;
@@ -806,7 +818,12 @@ export async function openCrashDialog(id: string, exitCode: number | null) {
 		kind: "crash",
 		instanceId: id,
 		session: dialogs.session + 1,
-		crash: { exitCode, lines, account: state.lastExits[id]?.account ?? null },
+		crash: {
+			exitCode,
+			lines,
+			account: state.lastExits[id]?.account ?? null,
+			recovered: state.lastExits[id]?.recovered === true,
+		},
 		leaveAfterRemove: false,
 		returnFocus: null,
 		createPreset: null,

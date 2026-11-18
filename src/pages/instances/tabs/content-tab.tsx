@@ -3,6 +3,7 @@ import {
 	ArrowUpDown,
 	ArrowUpRight,
 	Braces,
+	CircleAlert,
 	Compass,
 	Ellipsis,
 	ExternalLink,
@@ -62,6 +63,7 @@ import {
 	type ContentItem,
 	type ContentSource,
 	type ContentType,
+	type FailedSource,
 	type Instance,
 	type InstanceSubfolder,
 } from "@/lib/api";
@@ -82,9 +84,12 @@ import {
 	toggleContent,
 	useInstanceContent,
 	useUpdatesCheck,
+	type UpdatesCheck,
 } from "@/lib/content";
 import {
 	contentBusy,
+	failuresText,
+	sourceTotal,
 	updateAllContent,
 	updateAllKey,
 	updateProjectItem,
@@ -292,12 +297,13 @@ export function ContentTab({ instance }: { instance: Instance }) {
 						{t("content.sourceDisabled", { source: SOURCE_NAMES[disabledSource] })}
 					</p>
 				) : (
-					content?.offline && (
-						<p className="mt-3 flex items-center gap-1.5 text-[13px]/[18px] text-muted-foreground">
-							<WifiOff className="shrink-0" />
-							{t("content.offline")}
-						</p>
-					)
+					<UpdatesNotice
+						instanceId={instance.id}
+						check={check}
+						offline={Boolean(content?.offline)}
+						contentFailed={content?.failedSources ?? []}
+						items={items}
+					/>
 				)}
 				{groups.length === 0 ? (
 					<p className="py-10 text-center text-[13px]/[18px] text-muted-foreground">
@@ -388,6 +394,54 @@ export function ContentTab({ instance }: { instance: Instance }) {
 			)}
 			{body}
 			<RemoveDialog instanceId={instance.id} item={removing} onClose={() => setRemoving(null)} />
+		</div>
+	);
+}
+
+/** Пока идёт проверка, прошлый результат не показывается: рядом уже «Проверяем…». */
+function UpdatesNotice({
+	instanceId,
+	check,
+	offline,
+	contentFailed,
+	items,
+}: {
+	instanceId: string;
+	check: UpdatesCheck | null;
+	offline: boolean;
+	contentFailed: FailedSource[];
+	items: ContentItem[];
+}) {
+	const { t } = useTranslation();
+	if (check?.status === "checking") return null;
+	// Свежая проверка обновлений важнее того, что ядро видело при чтении списка.
+	const failed = check?.status === "done" ? check.failedSources : check ? [] : contentFailed;
+	const error = check?.status === "error" ? check.error : null;
+	const timeout = error?.code === "source_unavailable" && error.details === "timeout";
+	const network = error?.code === "network";
+	// Удачная проверка значит, что сеть есть: прежний признак `offline` уже не важен.
+	const noNetwork = network || (!error && offline && check?.status !== "done");
+	let text: string | null = null;
+	let Icon = WifiOff;
+	if (error && !network) {
+		Icon = CircleAlert;
+		text = timeout
+			? t("content.sourcesTimeout")
+			: t("content.updatesFailed", { error: errorText(error) });
+	} else if (failed.length) {
+		text = failuresText(failed, (source) => sourceTotal(items, source, "check"), "check");
+	} else if (noNetwork) text = t("content.offline");
+	if (!text) return null;
+	return (
+		<div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]/[18px] text-muted-foreground">
+			<span className="flex min-w-0 items-center gap-1.5">
+				<Icon className="shrink-0" />
+				<span className="min-w-0">{text}</span>
+			</span>
+			<Button variant="outline" size="sm" onClick={() => void checkContentUpdates(instanceId, true)}>
+				<RotateCcw />
+				{t("common.retry")}
+			</Button>
 		</div>
 	);
 }
@@ -620,11 +674,19 @@ function ContentRow({
 
 	const siteUrl = project && !sourceEnabled ? project.url : null;
 	const update = item.update;
-	const updateHint = update
+	const viaHint =
+		update?.via && project
+			? t("content.updateViaHint", {
+					via: SOURCE_NAMES[update.via],
+					source: SOURCE_NAMES[project.source],
+				})
+			: null;
+	const updateText = update
 		? update.siteOnly
 			? t("content.updateSiteOnly", { version: update.number })
 			: t("content.updateTo", { version: update.number })
 		: "";
+	const updateHint = viaHint ? `${updateText}. ${viaHint}` : updateText;
 	const open = () => {
 		if (siteUrl) openSite(siteUrl);
 		else if (project && sourceEnabled) openProject({ source: project.source, id: project.id }, item.type);
@@ -723,6 +785,11 @@ function ContentRow({
 						<span className="block truncate text-[13px]/[18px] text-muted-foreground">
 							{`${project ? SOURCE_NAMES[project.source] : t("content.source.file")} · ${size}`}
 						</span>
+						{viaHint && (
+							<span className="mt-1 block text-[13px]/[18px] whitespace-normal text-muted-foreground">
+								{viaHint}
+							</span>
+						)}
 					</DropdownMenuLabel>
 					<DropdownMenuSeparator />
 					{update?.siteOnly && project && (
@@ -784,6 +851,7 @@ function VersionText({ item, game }: { item: ContentItem; game: string }) {
 	const project = item.project;
 	if (!project) return null;
 	const short = shortVersion(project.versionNumber, game);
+	const via = item.update?.via ?? null;
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
@@ -795,12 +863,21 @@ function VersionText({ item, game }: { item: ContentItem; game: string }) {
 							<span className="text-primary-text">
 								{shortVersion(item.update.number, game)}
 							</span>
+							{via && <span>{t("content.updateVia", { source: SOURCE_NAMES[via] })}</span>}
 						</>
 					)}
 				</span>
 			</TooltipTrigger>
-			<TooltipContent>
+			<TooltipContent className="max-w-80">
 				{t("content.versionHint", { version: project.versionNumber, file: item.file })}
+				{via && (
+					<span className="mt-1 block">
+						{t("content.updateViaHint", {
+							via: SOURCE_NAMES[via],
+							source: SOURCE_NAMES[project.source],
+						})}
+					</span>
+				)}
 			</TooltipContent>
 		</Tooltip>
 	);

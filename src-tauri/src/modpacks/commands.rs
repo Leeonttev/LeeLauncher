@@ -59,7 +59,7 @@ fn spawn(app: AppHandle, l: Arc<Launcher>, started: install::Started, work: Work
 	let events: Arc<dyn InstallEvents> = Arc::new(TauriEvents(app.clone()));
 	tauri::async_runtime::spawn(async move {
 		if install::run(l.clone(), started, work, events).await {
-			if let Err(err) = crate::content::commands::identify(&l, &id).await {
+			if let Err(err) = crate::content::commands::identify(&l, &id).await.result {
 				log::info!("сборка {id}: контент не опознан: {:?}", err.code);
 			}
 			crate::gamedata::watch::emit(&app, crate::content::EVENT_CHANGED, &id);

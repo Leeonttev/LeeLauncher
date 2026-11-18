@@ -270,7 +270,7 @@ function CrashDialog({ dialogs }: { dialogs: DialogsState }) {
 					</pre>
 				) : (
 					<p className="mt-4 text-[13px]/[18px] text-muted-foreground">
-						{t("instance.crash.emptyLog")}
+						{crash?.recovered ? t("log.recovered") : t("instance.crash.emptyLog")}
 					</p>
 				)}
 				<div className="mt-6 flex items-center gap-2">

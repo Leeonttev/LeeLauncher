@@ -1,6 +1,6 @@
 # Выпуск версии: тег `vX.Y.Z` (совпадает с `version` в src-tauri/Cargo.toml) → сборка лаунчера,
-# свой установщик с лаунчером внутри, подпись minisign и черновик релиза с установщиком, `.sig`
-# и `latest.json`.
+# свой установщик с лаунчером внутри, подпись minisign и черновик релиза с установщиком
+# и `latest.json`. Файл `.sig` в релиз не выкладывается: подпись уже лежит в `latest.json`.
 # Лаунчеры видят версию только после того, как черновик опубликуют вручную.
 name: Release
 
@@ -30,8 +30,9 @@ jobs:
                     exit 1
                   fi
 
-            # Текст «Что нового» — раздел `## X.Y.Z` из CHANGELOG.md. Он попадает в релиз и в
-            # `notes` файла latest.json, то есть на экран обновления. Нет раздела — нет релиза.
+            # Текст «Что нового» — раздел `## X.Y.Z` из CHANGELOG.md. notes.md идёт в `notes` файла
+            # latest.json (экран обновления), release-body.md — тело релиза: сверху ссылка на
+            # установщик, ниже тот же текст. Нет раздела — нет релиза.
             - name: Что нового из CHANGELOG.md
               shell: bash
               run: |
@@ -45,6 +46,16 @@ jobs:
                     echo "::error::В CHANGELOG.md нет раздела «## $version» или он пустой"
                     exit 1
                   fi
+                  setup="LeeLauncher-Setup-$version.exe"
+                  {
+                    echo "### [⬇ Скачать $setup](https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$setup)"
+                    echo
+                    echo "или на сайте https://launcher.leeonttev.pro"
+                    echo
+                    echo "Download the installer above or at https://launcher.leeonttev.pro"
+                    echo
+                    cat notes.md
+                  } > release-body.md
 
             - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
               with:
@@ -115,4 +126,4 @@ jobs:
                   version="${GITHUB_REF_NAME#v}"
                   setup="out/LeeLauncher-Setup-$version.exe"
                   gh release create "$GITHUB_REF_NAME" --draft --title "LeeLauncher $version" \
-                    --notes-file notes.md "$setup" "$setup.sig" out/latest.json
+                    --notes-file release-body.md "$setup" out/latest.json

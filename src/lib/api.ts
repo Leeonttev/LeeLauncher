@@ -240,6 +240,8 @@ export type JavaInstall = {
 	vendor?: string;
 	/** Скачана лаунчером. */
 	managed: boolean;
+	/** Только у скачанных лаунчером и в ответе `java_list`: новая версия от Mojang. */
+	updateAvailable?: string;
 };
 
 export type JavaInstallProgress = { major: number; percent: number; bytesDone: number; bytesTotal: number };
@@ -257,6 +259,8 @@ export type Settings = {
 	discordPresence: boolean;
 	/** `false` — вместо названия сборки в статусе «Minecraft». */
 	discordShowInstance: boolean;
+	/** Защита от Java4Shell для Java 17+. */
+	java4shellMitigation: boolean;
 };
 
 export type SettingsPatch = {
@@ -266,6 +270,7 @@ export type SettingsPatch = {
 	downloadSource?: DownloadSource;
 	discordPresence?: boolean;
 	discordShowInstance?: boolean;
+	java4shellMitigation?: boolean;
 };
 
 export type SystemMemory = {
@@ -312,6 +317,8 @@ export type RunningGame = {
 	account?: GameAccountInfo;
 	/** ISO 8601. */
 	startedAt: string;
+	/** Запущена прошлым экземпляром лаунчера: лога нет. */
+	recovered?: true;
 };
 
 export type LogLine = {
@@ -389,6 +396,8 @@ export const javaApi = {
 	/** Системное окно выбора файла; выбранный файл сразу проверяется. `null` — окно закрыли без выбора. */
 	pickFile: (lang?: "ru" | "en"): Promise<JavaInstall | null> => command("java_pick_file", { lang }),
 	install: (major: number): Promise<JavaInstall> => command("java_install", { major }),
+	/** Обновить скачанную лаунчером Java этой версии; `file_in_use` — ею пользуется игра. */
+	update: (major: number): Promise<JavaInstall> => command("java_update", { major }),
 	/** Отменяет идущий `install` этой версии (тот вернёт `cancelled`). */
 	cancelInstall: (major: number): Promise<void> => command("java_install_cancel", { major }),
 	onInstallProgress: (handler: (progress: JavaInstallProgress) => void): Promise<() => void> =>
@@ -483,6 +492,11 @@ export const appApi = {
 	/** `first` — окно спрятано в трей впервые за запуск. Окно в этот момент уже скрыто. */
 	onHiddenToTray: (handler: (payload: { first: boolean }) => void): Promise<() => void> =>
 		subscribe("app-hidden-to-tray", handler),
+	/** Закрыть все игры и выйти. */
+	quit: (): Promise<void> => command("app_quit"),
+	/** «Выйти» в трее, пока идут игры; окно уже показано. */
+	onQuitRequested: (handler: (payload: { games: number }) => void): Promise<() => void> =>
+		subscribe("app-quit-requested", handler),
 };
 
 /* Discord */
@@ -609,6 +623,8 @@ export type InstallResult = {
 	download: Download | null;
 	/** «Только с сайта». */
 	manual: ManualFile[];
+	/** Только у `instance_content_update`: каталоги не ответили, их обновления не установлены. */
+	failedSources?: FailedSource[];
 };
 
 export type ManualSession = {
@@ -638,6 +654,16 @@ export type AllInfo = {
 };
 
 export type PartialFailure = { source: ContentSource; error: AppError };
+
+/** Каталог, который не ответил при проверке обновлений: его файлы в этот раз не проверены. */
+export type FailedSource = {
+	source: ContentSource;
+	code: string;
+	/** Столько его файлов нашлось и проверено (или поставлено) через другой каталог; `null` — ни одного. */
+	coveredBy?: { source: ContentSource; files: number } | null;
+};
+
+export type ContentUpdates = { items: ContentItem[]; failedSources: FailedSource[] };
 
 export type SearchParams = {
 	/** По умолчанию `modrinth`; `all` — все каталоги одним списком. */
@@ -775,7 +801,8 @@ export type Project = ProjectHit & {
 	/** Unix мс. */
 	publishedAt: number;
 	/** При `instanceId`: что поставится (без `changelog`). */
-	bestVersion?: ContentVersion;
+	/** `null` — не успели подобрать в срок. */
+	bestVersion?: ContentVersion | null;
 };
 
 /** `icon` — SVG текстом (в интерфейсе не вставляем). */
@@ -814,8 +841,11 @@ export type ContentItem = {
 		/** Страница на сайте (для «Открыть на сайте», когда источник выключен). */
 		url: string | null;
 	} | null;
-	/** По последней проверке; `siteOnly` — новую версию скачать только на сайте. */
-	update: { versionId: string; number: string; siteOnly: boolean } | null;
+	/**
+	 * По последней проверке; `siteOnly` — новую версию скачать только на сайте;
+	 * `via` — найдено в другом каталоге (свой не ответил) и ставится оттуда.
+	 */
+	update: { versionId: string; number: string; siteOnly: boolean; via?: ContentSource | null } | null;
 	/** Файл из модпака сборки; `false` — добавил пользователь (у сборок без модпака всегда `false`). */
 	fromModpack: boolean;
 };
@@ -834,6 +864,14 @@ export type InstallRequest = {
 	optional?: string[];
 };
 
+export type InstalledElsewhere = {
+	project: ProjectHit;
+	/** `null` — добавлен файлом, каталог неизвестен. */
+	installedFrom: ContentSource | null;
+	file: string;
+	optional: boolean;
+};
+
 export type ResolveView = {
 	/** Что поставится (без `changelog`). */
 	version: ContentVersion;
@@ -848,6 +886,8 @@ export type ResolveView = {
 	conflicts: ContentItem[];
 	/** Эта версия уже стоит. */
 	alreadyInstalled: boolean;
+	/** Зависимости, которые уже стоят из другого каталога или файлом: не ставятся. */
+	installedElsewhere: InstalledElsewhere[];
 	/** «Только с сайта»: обязательные, выбранные необязательные и сам проект, если он такой. */
 	manual: ManualFile[];
 };
@@ -964,10 +1004,10 @@ export const catalogApi = {
 
 export const contentApi = {
 	/** Сразу, без сети; неопознанное ядро опознаёт в фоне и шлёт `instance-content-changed`. */
-	list: (id: string): Promise<{ items: ContentItem[]; offline: boolean }> =>
+	list: (id: string): Promise<{ items: ContentItem[]; offline: boolean; failedSources: FailedSource[] }> =>
 		command("instance_content", { id }),
 	/** Проверка обновлений (без `force` — не чаще раза в 10 минут, иначе кэш). */
-	updates: (id: string, force?: boolean): Promise<ContentItem[]> =>
+	updates: (id: string, force?: boolean): Promise<ContentUpdates> =>
 		command("instance_content_updates", { id, force }),
 	toggle: (id: string, item: FileRef, enabled: boolean): Promise<ContentItem> =>
 		command("instance_content_toggle", { id, item, enabled }),

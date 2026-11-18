@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-java-update"
+description = "Enables the java_update command without any pre-configured scope."
+commands.allow = ["java_update"]
+
+[[permission]]
+identifier = "deny-java-update"
+description = "Denies the java_update command without any pre-configured scope."
+commands.deny = ["java_update"]

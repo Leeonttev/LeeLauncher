@@ -2,6 +2,7 @@ import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import emptySprite from "@/assets/pixel/sprite-instances-empty.png";
 import { CenteredState } from "@/components/centered-state";
+import { ImportMenu } from "@/components/instances/import-menu";
 import { InstanceCover } from "@/components/instances/instance-cover";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -61,7 +62,13 @@ export function InstancesEmpty() {
 			title={t("instances.empty.title")}
 			description={t("instances.empty.description")}
 			heading="h2"
-			action={<CreateInstanceButton />}
+			action={
+				<>
+					<CreateInstanceButton />
+					<ImportMenu align="center" />
+				</>
+			}
+			footer={<p className="text-[13px] text-muted-foreground">{t("instances.empty.dropHint")}</p>}
 		/>
 	);
 }

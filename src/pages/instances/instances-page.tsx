@@ -1,16 +1,4 @@
-import {
-	ChevronDown,
-	Download,
-	FolderPlus,
-	LayoutGrid,
-	List,
-	OctagonX,
-	Package,
-	RotateCcw,
-	Search,
-	X,
-	type LucideIcon,
-} from "lucide-react";
+import { FolderPlus, LayoutGrid, List, OctagonX, RotateCcw, Search, X, type LucideIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { createElement, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -20,21 +8,14 @@ import { GRID_CLASS, InstanceGrid } from "@/components/instances/instance-grid";
 import { InstanceRow } from "@/components/instances/instance-row";
 import { CreateInstanceButton, InstancesEmpty } from "@/components/instances/instances-empty";
 import { GroupHeader } from "@/components/instances/group-header";
+import { ImportMenu } from "@/components/instances/import-menu";
 import { PixelGrid } from "@/components/pixel-grid";
 import { Segments } from "@/components/segments";
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuShortcut,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { overlayOpen, typingTarget, useCreateShortcut } from "@/hooks/use-create-shortcut";
 import { useDelayedFlag } from "@/hooks/use-delayed-flag";
-import { usePendingAction } from "@/hooks/use-pending-action";
 import { LOADER_KINDS, type Instance, type LoaderKind } from "@/lib/api";
 import { useAppearance } from "@/lib/appearance";
 import {
@@ -51,7 +32,7 @@ import {
 import { errorText } from "@/lib/errors";
 import { compareRecent, reloadInstances, useInstances } from "@/lib/instances";
 import { compareGameVersions, LOADER_NAMES } from "@/lib/loaders";
-import { pickModpackFile, useModpackFileShortcut } from "@/lib/modpacks";
+import { useModpackFileShortcut } from "@/lib/modpacks";
 import { readStorage, writeStorage } from "@/lib/storage";
 
 const SORTS = ["recent", "name", "version", "created"] as const;
@@ -374,35 +355,6 @@ export function InstancesPage() {
 			</div>
 			{body}
 		</div>
-	);
-}
-
-/** Действие — после закрытия меню. */
-function ImportMenu() {
-	const { t } = useTranslation();
-	const pending = usePendingAction();
-	const triggerRef = useRef<HTMLButtonElement>(null);
-	return (
-		<DropdownMenu>
-			<DropdownMenuTrigger asChild>
-				<Button ref={triggerRef} variant="outline" className="aria-expanded:bg-accent">
-					<Download />
-					{t("instances.import.label")}
-					<ChevronDown className="text-muted-foreground" />
-				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" className="w-78" onCloseAutoFocus={pending.onCloseAutoFocus}>
-				<DropdownMenuItem
-					onSelect={() => pending.defer(() => void pickModpackFile(triggerRef.current))}
-				>
-					<Package />
-					{t("instances.import.file")}
-					<DropdownMenuShortcut className="text-[13px] tracking-normal">
-						{t("instances.import.shortcut")}
-					</DropdownMenuShortcut>
-				</DropdownMenuItem>
-			</DropdownMenuContent>
-		</DropdownMenu>
 	);
 }
 

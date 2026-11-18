@@ -1,6 +1,7 @@
 import {
 	ArrowUpDown,
 	Braces,
+	CircleAlert,
 	Compass,
 	FolderOpen,
 	Globe,
@@ -12,7 +13,6 @@ import {
 	RotateCcw,
 	Search,
 	Sparkles,
-	TriangleAlert,
 	WifiOff,
 	X,
 } from "lucide-react";
@@ -23,6 +23,7 @@ import { useTranslation } from "react-i18next";
 import { CatalogFilters } from "@/components/catalog/catalog-filters";
 import { InstanceContextPicker } from "@/components/catalog/instance-context-picker";
 import { ProjectRow, ProjectRowSkeleton } from "@/components/catalog/project-row";
+import { SlowNotice } from "@/components/catalog/slow-notice";
 import { CenteredState } from "@/components/centered-state";
 import { ScrollContainerContext, useScrollContainer } from "@/components/layout/scroll-container";
 import { PageTabs } from "@/components/page-tabs";
@@ -42,6 +43,7 @@ import {
 	getCatalog,
 	hasMoreResults,
 	hitKey,
+	isUnreachable,
 	loadMoreCatalog,
 	MAX_OFFSET,
 	otherSource,
@@ -65,7 +67,7 @@ import {
 	type CatalogType,
 } from "@/lib/catalog";
 import { errorText } from "@/lib/errors";
-import { formatNumber } from "@/lib/format";
+import { formatList, formatNumber } from "@/lib/format";
 import { useInstances } from "@/lib/instances";
 import { pickModpackFile, useModpackFileShortcut } from "@/lib/modpacks";
 import { cn } from "@/lib/utils";
@@ -326,20 +328,26 @@ function Results({
 		) : null;
 
 	if (results.status === "idle" || firstLoad) {
-		return showSkeleton ? (
-			<div aria-busy className="mt-7">
-				{Array.from({ length: 6 }, (_, i) => (
-					<ProjectRowSkeleton key={i} />
-				))}
-			</div>
-		) : null;
+		return (
+			<>
+				<SlowNotice loading={firstLoad} source={state.source} switchable className="mt-4" />
+				{showSkeleton && (
+					<div aria-busy className="mt-7">
+						{Array.from({ length: 6 }, (_, i) => (
+							<ProjectRowSkeleton key={i} />
+						))}
+					</div>
+				)}
+			</>
+		);
 	}
 
 	if (results.status === "error" && results.error) {
 		const error = results.error;
-		const offline = error.code === "network";
-		const sourceDown =
-			single !== null && (error.code === "source_unavailable" || error.code === "rate_limited");
+		// Один источник: сеть или сбой — скорее всего, сайт не открывается именно отсюда.
+		const unreachable = single !== null && isUnreachable(error);
+		const offline = !unreachable && error.code === "network";
+		const sourceDown = single !== null && error.code === "rate_limited";
 		const disabled = single !== null && error.code === "source_disabled";
 		const retry = (
 			<Button variant="outline" onClick={() => void searchCatalog(params, true)}>
@@ -355,23 +363,27 @@ function Results({
 				fill={false}
 				className="py-16"
 				title={
-					offline
-						? t("catalog.error.offlineTitle")
-						: disabled
-							? t("catalog.error.disabledTitle", { source })
-							: sourceDown
-								? t("catalog.error.sourceTitle", { source })
-								: t("catalog.error.title")
+					unreachable
+						? t("catalog.error.unreachableTitle", { source })
+						: offline
+							? t("catalog.error.offlineTitle")
+							: disabled
+								? t("catalog.error.disabledTitle", { source })
+								: sourceDown
+									? t("catalog.error.sourceTitle", { source })
+									: t("catalog.error.title")
 				}
 				description={
-					offline
-						? t("catalog.error.offlineDescription")
-						: disabled && error.details === "denied"
-							? t("catalog.error.deniedDescription", { source })
-							: errorText(error)
+					unreachable
+						? t("catalog.error.unreachableDescription")
+						: offline
+							? t("catalog.error.offlineDescription")
+							: disabled && error.details === "denied"
+								? t("catalog.error.deniedDescription", { source })
+								: errorText(error)
 				}
 				action={
-					sourceDown || disabled ? (
+					unreachable || sourceDown || disabled ? (
 						<div className="flex flex-wrap justify-center gap-2">
 							{retry}
 							{otherButton("catalog.error.openSource")}
@@ -397,6 +409,7 @@ function Results({
 			aria-busy={refreshing || undefined}
 			className={cn("transition-opacity duration-(--duration-base)", refreshing && "opacity-60")}
 		>
+			<SlowNotice loading={refreshing} source={state.source} switchable className="mt-3" />
 			<p className="mt-3 text-[13px]/[18px] text-muted-foreground">
 				{/* В «Все» `total` считает и дубли: только оценка. */}
 				{single
@@ -477,19 +490,32 @@ function PartialWarning({ state, params }: { state: CatalogState; params: Search
 	const all = useSources().all;
 	const failed = state.results.partial.map((p) => p.source);
 	const shown = all.sources.filter((id) => !failed.includes(id));
-	const names = (ids: ContentSource[]) => ids.map((id) => SOURCE_NAMES[id]).join(", ");
+	const names = (ids: ContentSource[]) => formatList(ids.map((id) => SOURCE_NAMES[id]));
+	const busy = state.results.status === "loading";
 	return (
-		<p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px]/[18px] text-warning">
-			<TriangleAlert />
-			<span>{t("catalog.partial", { source: names(failed), other: names(shown) })}</span>
-			<button
-				type="button"
-				className="relative rounded-md border border-transparent px-1 font-semibold text-primary-text hover:underline"
-				onClick={() => void searchCatalog(params, true)}
+		<div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]/[18px]">
+			<span className="flex min-w-0 items-center gap-1.5">
+				<CircleAlert className="shrink-0 text-warning" />
+				<span className="min-w-0">
+					{shown.length
+						? t("catalog.partial", { source: names(failed), other: names(shown) })
+						: failed.length > 1
+							? t("catalog.partialNoneMany", { sources: names(failed) })
+							: t("catalog.partialNone", { source: names(failed) })}
+				</span>
+			</span>
+			<Button
+				variant="ghost"
+				size="sm"
+				aria-disabled={busy || undefined}
+				onClick={() => {
+					if (!busy) void searchCatalog(params, true);
+				}}
 			>
+				<RotateCcw />
 				{t("common.retry")}
-			</button>
-		</p>
+			</Button>
+		</div>
 	);
 }
 
@@ -601,6 +627,7 @@ function ListFooter({ state, params }: { state: CatalogState; params: SearchPara
 	if (results.loadingMore) {
 		footer = (
 			<div aria-busy>
+				<SlowNotice loading source={state.source} className="justify-center py-3" />
 				<ProjectRowSkeleton />
 				<ProjectRowSkeleton />
 			</div>

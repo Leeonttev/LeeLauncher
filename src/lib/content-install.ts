@@ -10,15 +10,25 @@ import {
 	type ContentSource,
 	type ContentType,
 	type Download,
+	type FailedSource,
 	type Instance,
 	type InstallRequest,
 	type InstallResult,
 	type ProjectHit,
 	type ResolveView,
 } from "@/lib/api";
-import { fileRef, findProjectItem, loadContent, type InstanceContent } from "@/lib/content";
+import {
+	fileRef,
+	findProjectItem,
+	getContentCache,
+	loadContent,
+	uniqueFailures,
+	type InstanceContent,
+} from "@/lib/content";
 import { addDownload, getDownloads, isDone, subscribeDownloads, type DownloadsStore } from "@/lib/downloads";
 import { errorText, toAppError, type AppError } from "@/lib/errors";
+import { SOURCE_NAMES } from "@/lib/catalog";
+import { formatList } from "@/lib/format";
 import { i18n } from "@/lib/i18n";
 import { getInstances, statusOf, type InstancesStore } from "@/lib/instances";
 import type { InstanceWorlds } from "@/lib/worlds";
@@ -185,12 +195,65 @@ function applyResult(
 	title: string,
 	pass: boolean,
 	returnFocus?: HTMLElement | null,
+	targets: ContentItem[] = [],
 ) {
 	if (result.download) startTracking(result.download, instanceId, title);
 	if (result.manual.length)
 		void openManualDialog(instanceId, pass ? result.manual : undefined, returnFocus);
 	else if (!result.download) void loadContent(instanceId);
 	if (!pass && result.manual.length) void loadManual(instanceId);
+	const text = failuresText(
+		uniqueFailures(result.failedSources),
+		(source) => sourceTotal(targets, source, "update"),
+		"update",
+	);
+	if (text) toast.warning(text);
+}
+
+/** Сколько файлов каталога нужно было проверить или обновить; при обновлении файл с `update.via` относится к `via`. */
+export function sourceTotal(items: ContentItem[], source: ContentSource, mode: "check" | "update") {
+	return items.filter(
+		(item) =>
+			(mode === "update" ? (item.update?.via ?? item.project?.source) : item.project?.source) ===
+			source,
+	).length;
+}
+
+/**
+ * Текст о каталогах, которые не ответили. Подстраховка другим каталогом (`coveredBy`) называется отдельно;
+ * `total` — сколько файлов каталога было нужно, чтобы сказать «остальные не проверены».
+ */
+export function failuresText(
+	failed: FailedSource[],
+	total: (source: ContentSource) => number,
+	mode: "check" | "update",
+): string | null {
+	if (!failed.length) return null;
+	if (!failed.some((f) => (f.coveredBy?.files ?? 0) > 0)) {
+		const names = failed.map((f) => SOURCE_NAMES[f.source]);
+		if (mode === "check")
+			return names.length === 1
+				? i18n.t("content.sourceUnreachable", { source: names[0] })
+				: i18n.t("content.sourcesUnreachable", { sources: formatList(names) });
+		return names.length === 1
+			? i18n.t("content.updateSkipped", { source: names[0] })
+			: i18n.t("content.updateSkippedMany", { sources: formatList(names) });
+	}
+	return failed
+		.map((f) => {
+			const source = SOURCE_NAMES[f.source];
+			const covered = f.coveredBy;
+			if (!covered || covered.files <= 0)
+				return mode === "check"
+					? i18n.t("content.sourceUnreachable", { source })
+					: i18n.t("content.updateSkipped", { source });
+			const args = { source, via: SOURCE_NAMES[covered.source], count: covered.files };
+			if (covered.files >= total(f.source)) return i18n.t("content.sourceCovered", args);
+			return mode === "check"
+				? i18n.t("content.sourceCoveredPartial", args)
+				: i18n.t("content.updateCoveredPartial", args);
+		})
+		.join("; ");
 }
 
 async function runInstall(target: InstallTarget, optional?: string[], returnFocus?: HTMLElement | null) {
@@ -266,7 +329,7 @@ export async function updateProjectItem(
 	try {
 		const result = await contentApi.update(instanceId, [fileRef(item)]);
 		set({ pending: without(ui.pending, key) });
-		applyResult(result, instanceId, item.project?.title ?? item.file, false, returnFocus);
+		applyResult(result, instanceId, item.project?.title ?? item.file, false, returnFocus, [item]);
 	} catch (err) {
 		failed(key, err, () => void updateProjectItem(instanceId, item, returnFocus));
 	}
@@ -280,10 +343,19 @@ export async function updateAllContent(instanceId: string, returnFocus?: HTMLEle
 	const key = updateAllKey(instanceId);
 	if (ui.pending[key]) return;
 	set({ pending: { ...ui.pending, [key]: true }, errors: without(ui.errors, key) });
+	const entry = getContentCache()[instanceId];
+	const targets = entry?.status === "ready" ? entry.items.filter((item) => item.update) : [];
 	try {
 		const result = await contentApi.update(instanceId);
 		set({ pending: without(ui.pending, key) });
-		applyResult(result, instanceId, result.download?.content?.projectTitle ?? "", false, returnFocus);
+		applyResult(
+			result,
+			instanceId,
+			result.download?.content?.projectTitle ?? "",
+			false,
+			returnFocus,
+			targets,
+		);
 	} catch (err) {
 		failed(key, err, () => void updateAllContent(instanceId, returnFocus));
 	}

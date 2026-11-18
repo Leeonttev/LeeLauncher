@@ -205,6 +205,7 @@ async fn live_java_runtime() {
 		17,
 		Progress::silent(),
 		&CancellationToken::new(),
+		&|_| false,
 	)
 	.await
 	.unwrap();

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -97,7 +98,7 @@ pub fn build_client(key: &str) -> Result<reqwest::Client, AppError> {
 		.user_agent(crate::http::USER_AGENT)
 		.default_headers(headers)
 		.redirect(reqwest::redirect::Policy::none())
-		.connect_timeout(Duration::from_secs(15))
+		.connect_timeout(Duration::from_secs(5))
 		.timeout(REQUEST_TIMEOUT)
 		.build()
 		.map_err(|e| AppError::unknown(e.to_string()))
@@ -235,6 +236,8 @@ pub struct CurseForge {
 	limit: Semaphore,
 	blocked_until: Mutex<Option<Instant>>,
 	tags_file: PathBuf,
+	/// Срок одного запроса вместе с повторами.
+	deadline: Duration,
 }
 
 impl CurseForge {
@@ -248,7 +251,14 @@ impl CurseForge {
 			limit: Semaphore::new(CONCURRENCY),
 			blocked_until: Mutex::new(None),
 			tags_file,
+			deadline: super::FETCH_DEADLINE,
 		})
+	}
+
+	#[cfg(test)]
+	pub fn with_deadline(mut self, deadline: Duration) -> Self {
+		self.deadline = deadline;
+		self
 	}
 
 	fn url(&self, segments: &[&str]) -> Url {
@@ -264,7 +274,9 @@ impl CurseForge {
 		if let Some(body) = self.cache.fresh(&key) {
 			return Ok((body, false));
 		}
-		match self.send(&req).await {
+		let connect_failed = AtomicBool::new(false);
+		let sent = self.send(&req, &connect_failed).await;
+		match sent {
 			Ok(body) => {
 				let body = Arc::new(body);
 				self.cache.put(key, ttl, body.clone());
@@ -313,7 +325,7 @@ impl CurseForge {
 			return Ok(());
 		}
 		let wait = until - now;
-		if wait > MAX_RATE_WAIT {
+		if wait > MAX_RATE_WAIT || super::wait_exceeds_command(wait) {
 			return Err(AppError::coded(
 				ErrorCode::RateLimited,
 				format!("curseforge: лимит запросов, ещё {} с", wait.as_secs() + 1),
@@ -336,77 +348,105 @@ impl CurseForge {
 		}
 	}
 
-	async fn send(&self, req: &Request) -> Result<Vec<u8>, AppError> {
-		let _permit = self
-			.limit
-			.acquire()
+	async fn send(&self, req: &Request, connect_failed: &AtomicBool) -> Result<Vec<u8>, AppError> {
+		// Очередь и пауза лимита — вне срока запроса (но в сроке команды, см. `super::within`).
+		let _permit = super::waiting(self.limit.acquire())
 			.await
 			.map_err(|_| AppError::unknown("curseforge: семафор закрыт"))?;
 		let mut network_attempt = 0;
 		let mut waited_429 = false;
+		// Срок — только у отправки и повторов: считается с первой отправки.
+		let mut left = self.deadline;
 		loop {
-			self.wait_rate().await?;
-			let builder = match req {
-				Request::Get(url) => self.client.get(url.clone()),
-				Request::Post(url, body) => self.client.post(url.clone()).json(body),
-			};
-			let resp = match builder.send().await {
-				Ok(resp) => resp,
-				Err(err) => {
-					if (err.is_connect() || err.is_timeout()) && network_attempt < NETWORK_RETRIES {
-						network_attempt += 1;
-						tokio::time::sleep(Duration::from_millis(500 * u64::from(network_attempt)))
-							.await;
-						continue;
+			super::waiting(self.wait_rate()).await?;
+			let started = tokio::time::Instant::now();
+			let step = tokio::time::timeout(left, async {
+				let builder = match req {
+					Request::Get(url) => self.client.get(url.clone()),
+					Request::Post(url, body) => self.client.post(url.clone()).json(body),
+				};
+				let resp = match builder.send().await {
+					Ok(resp) => {
+						connect_failed.store(false, Ordering::Relaxed);
+						resp
 					}
-					return Err(AppError::coded(
-						ErrorCode::Network,
-						format!("curseforge: {}", err.without_url()),
-					));
-				}
-			};
-			let status = resp.status().as_u16();
-			match status {
-				200..=299 => {
-					return resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-						AppError::coded(
-							ErrorCode::Network,
-							format!("curseforge: {}", e.without_url()),
-						)
-					});
-				}
-				429 => {
-					self.note_limited(resp.headers());
-					if waited_429 {
+					Err(err) => {
+						if err.is_connect() {
+							connect_failed.store(true, Ordering::Relaxed);
+						}
+						if (err.is_connect() || err.is_timeout())
+							&& network_attempt < NETWORK_RETRIES
+						{
+							network_attempt += 1;
+							tokio::time::sleep(Duration::from_millis(
+								500 * u64::from(network_attempt),
+							))
+							.await;
+							return Ok(None);
+						}
 						return Err(AppError::coded(
-							ErrorCode::RateLimited,
-							"curseforge: HTTP 429",
+							ErrorCode::Network,
+							format!("curseforge: {}", err.without_url()),
 						));
 					}
-					waited_429 = true;
+				};
+				let status = resp.status().as_u16();
+				match status {
+					200..=299 => {
+						return resp.bytes().await.map(|b| Some(b.to_vec())).map_err(|e| {
+							AppError::coded(
+								ErrorCode::Network,
+								format!("curseforge: {}", e.without_url()),
+							)
+						});
+					}
+					429 => {
+						self.note_limited(resp.headers());
+						if waited_429 {
+							return Err(AppError::coded(
+								ErrorCode::RateLimited,
+								"curseforge: HTTP 429",
+							));
+						}
+						waited_429 = true;
+					}
+					401 | 403 => {
+						log::warn!("curseforge: HTTP {status} — ключ API не принят");
+						return Err(AppError::coded(ErrorCode::SourceDisabled, DENIED));
+					}
+					404 => {
+						return Err(AppError::coded(
+							ErrorCode::ContentNotFound,
+							format!("curseforge: HTTP 404 {}", resp.url().path()),
+						));
+					}
+					500..=599 => {
+						return Err(AppError::coded(
+							ErrorCode::SourceUnavailable,
+							format!("curseforge: HTTP {status}"),
+						));
+					}
+					_ => {
+						let body = resp.text().await.unwrap_or_default();
+						let body: String = body.chars().take(300).collect();
+						return Err(AppError::unknown(format!(
+							"curseforge: HTTP {status}: {body}"
+						)));
+					}
 				}
-				401 | 403 => {
-					log::warn!("curseforge: HTTP {status} — ключ API не принят");
-					return Err(AppError::coded(ErrorCode::SourceDisabled, DENIED));
-				}
-				404 => {
-					return Err(AppError::coded(
-						ErrorCode::ContentNotFound,
-						format!("curseforge: HTTP 404 {}", resp.url().path()),
+				Ok(None)
+			})
+			.await;
+			left = left.saturating_sub(started.elapsed());
+			match step {
+				Ok(Ok(Some(body))) => return Ok(body),
+				Ok(Ok(None)) => {}
+				Ok(Err(err)) => return Err(err),
+				Err(_) => {
+					return Err(super::deadline_error(
+						"curseforge",
+						connect_failed.load(Ordering::Relaxed),
 					));
-				}
-				500..=599 => {
-					return Err(AppError::coded(
-						ErrorCode::SourceUnavailable,
-						format!("curseforge: HTTP {status}"),
-					));
-				}
-				_ => {
-					let body = resp.text().await.unwrap_or_default();
-					let body: String = body.chars().take(300).collect();
-					return Err(AppError::unknown(format!(
-						"curseforge: HTTP {status}: {body}"
-					)));
 				}
 			}
 		}
@@ -1785,6 +1825,34 @@ mod tests {
 			dir.join("cats.json"),
 		)
 		.unwrap()
+	}
+
+	/// Сервер, который принимает соединение и молчит.
+	async fn silent() -> String {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let addr = listener.local_addr().unwrap();
+		tokio::spawn(async move {
+			let mut held = Vec::new();
+			while let Ok((socket, _)) = listener.accept().await {
+				held.push(socket);
+			}
+		});
+		format!("http://{addr}")
+	}
+
+	#[tokio::test]
+	async fn silent_server_times_out() {
+		let base = silent().await;
+		let cf = client(&base).with_deadline(Duration::from_millis(500));
+		let started = Instant::now();
+		let q: SearchQuery = serde_json::from_value(json!({ "type": "mod" })).unwrap();
+		let err = cf.search_impl(&q).await.unwrap_err();
+		assert!(started.elapsed() < Duration::from_secs(3));
+		assert_eq!(err.code, ErrorCode::SourceUnavailable);
+		assert_eq!(
+			err.details.as_deref(),
+			Some(crate::content::TIMEOUT_DETAILS)
+		);
 	}
 
 	#[tokio::test]

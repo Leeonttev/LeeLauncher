@@ -255,6 +255,18 @@ export const ru = {
 				statusFound: "Найдена на компьютере · {version}",
 				statusMissing: "Файл не найден — будет использована автоматическая",
 				wrongMajor: "Это Java {found}, а здесь нужна Java {major}",
+				updateAvailable: "Доступна {version}",
+				update: "Обновить",
+				updating: "Обновляем…",
+				updateLabel: "Обновить Java {major}",
+				updatingLabel: "Обновляем Java {major}…",
+				updateInUse: "Java сейчас используется игрой. Закройте игру и нажмите «Обновить» ещё раз",
+				updateLocked: "Java сейчас занята. Попробуйте ещё раз через минуту",
+			},
+			java4shell: {
+				title: "Защита от уязвимости Java4Shell",
+				description:
+					"Для Java 17 и новее добавляет аргументы, которые отключают уязвимое место (CVE-2026-114938). Выключайте, только если знаете, что ваша Java уже исправлена",
 			},
 			dataFolder: {
 				title: "Папка данных",
@@ -424,6 +436,7 @@ export const ru = {
 		empty: {
 			title: "Сборок пока нет",
 			description: "Выберите версию игры и загрузчик — лаунчер сам скачает всё нужное",
+			dropHint: "или перетащите файл модпака в окно",
 		},
 		filter: {
 			label: "Загрузчик",
@@ -552,6 +565,7 @@ export const ru = {
 				incompatible: "Не подходит для {version}",
 				browse: "Указать файл…",
 				customPath: "Свой файл",
+				searching: "Ищем Java…",
 			},
 			resolution: {
 				title: "Размер окна",
@@ -755,6 +769,17 @@ export const ru = {
 		volcano: "Вулкан",
 		cosmos: "Космос",
 	},
+	quit: {
+		title: "Выйти из LeeLauncher?",
+		description_one: "Закроется {count} запущенная игра. Несохранённый прогресс в мире может пропасть",
+		description_few: "Закроются {count} запущенные игры. Несохранённый прогресс в мире может пропасть",
+		description_many: "Закроются {count} запущенных игр. Несохранённый прогресс в мире может пропасть",
+		description_other: "Закроются {count} запущенной игры. Несохранённый прогресс в мире может пропасть",
+		descriptionNamed: "Игра «{name}» закроется. Несохранённый прогресс в мире может пропасть",
+		descriptionNamedAs: "Игра «{name}» за {nick} закроется. Несохранённый прогресс в мире может пропасть",
+		confirm: "Выйти и закрыть игры",
+		closing: "Закрываем игры…",
+	},
 	tray: {
 		hidden: {
 			title: "LeeLauncher работал в трее",
@@ -911,7 +936,14 @@ export const ru = {
 		},
 		found: "Найдено {count}",
 		foundApprox: "Найдено ≈{count}",
-		partial: "{source} не ответил — показаны результаты {other}",
+		partial: "{source} сейчас недоступен — показаны результаты только с {other}",
+		partialNone: "{source} сейчас недоступен",
+		partialNoneMany: "{sources} сейчас недоступны",
+		slow: {
+			one: "{source} отвечает долго…",
+			all: "Каталоги отвечают долго…",
+			openAll: "Искать во всех",
+		},
 		end: "Это все результаты · {count}",
 		tooFar: "Уточните запрос, чтобы увидеть больше",
 		offlineCached: "Нет сети: показаны сохранённые результаты",
@@ -933,6 +965,9 @@ export const ru = {
 			offlineTitle: "Нет подключения",
 			offlineDescription: "Каталог загружается из интернета. Проверьте сеть и попробуйте ещё раз",
 			sourceTitle: "{source} не отвечает",
+			unreachableTitle: "Не удаётся связаться с {source}",
+			unreachableDescription:
+				"Возможно, сайт сейчас не открывается из вашей сети или у провайдера. Проверьте интернет и попробуйте позже — или через VPN",
 			title: "Не удалось загрузить каталог",
 			openSource: "Открыть {source}",
 			disabledTitle: "{source} недоступен",
@@ -988,6 +1023,8 @@ export const ru = {
 			description: "Вместе с ним поставим то, без чего он не работает",
 			required: "Нужен · будет установлен",
 			requiredInstalled: "Нужен · установлен",
+			installedFrom: "Уже установлен · с {source}",
+			installedFile: "Уже установлен · добавлен файлом",
 			optional: "Рекомендуется",
 			conflict: "Несовместим с {name} — он выключится",
 			missing: "Не нашлось подходящей версии: {name}",
@@ -1303,6 +1340,35 @@ export const ru = {
 		},
 		gameRunning: "Закройте игру, чтобы менять установленное",
 		offline: "Нет сети: обновления не проверены",
+		sourceUnreachable: "{source} недоступен: обновления с него не проверены",
+		sourcesUnreachable: "{sources} недоступны: обновления с них не проверены",
+		sourcesTimeout: "Сайты каталогов не ответили вовремя: обновления не проверены",
+		updatesFailed: "Не удалось проверить обновления: {error}",
+		updateSkipped: "{source} недоступен: обновления с него не установлены",
+		updateSkippedMany: "{sources} недоступны: обновления с них не установлены",
+		sourceCovered_one: "{source} недоступен — {count} файл проверен через {via}",
+		sourceCovered_few: "{source} недоступен — {count} файла проверены через {via}",
+		sourceCovered_many: "{source} недоступен — {count} файлов проверены через {via}",
+		sourceCovered_other: "{source} недоступен — {count} файла проверены через {via}",
+		sourceCoveredPartial_one:
+			"{source} недоступен — {count} файл проверен через {via}, остальные не проверены",
+		sourceCoveredPartial_few:
+			"{source} недоступен — {count} файла проверены через {via}, остальные не проверены",
+		sourceCoveredPartial_many:
+			"{source} недоступен — {count} файлов проверены через {via}, остальные не проверены",
+		sourceCoveredPartial_other:
+			"{source} недоступен — {count} файла проверены через {via}, остальные не проверены",
+		updateCoveredPartial_one:
+			"{source} недоступен — {count} файл проверен через {via}, остальные не обновлены",
+		updateCoveredPartial_few:
+			"{source} недоступен — {count} файла проверены через {via}, остальные не обновлены",
+		updateCoveredPartial_many:
+			"{source} недоступен — {count} файлов проверены через {via}, остальные не обновлены",
+		updateCoveredPartial_other:
+			"{source} недоступен — {count} файла проверены через {via}, остальные не обновлены",
+		updateVia: "с {source}",
+		updateViaHint:
+			"Обновление найдено на {via}: {source} сейчас недоступен. После обновления мод будет обновляться с {via}",
 		empty: {
 			title: "Здесь пока пусто",
 			description: "Добавьте моды, шейдеры или ресурспаки из каталога — или перетащите файлы в окно",
@@ -1379,6 +1445,8 @@ export const ru = {
 		running_few: "Игра запущена · {duration} · {count} строки",
 		running_many: "Игра запущена · {duration} · {count} строк",
 		running_other: "Игра запущена · {duration} · {count} строки",
+		runningNoLog: "Игра запущена · {duration}",
+		recovered: "Игра запущена до перезапуска лаунчера — её лог недоступен",
 		last: "Последний запуск · {when} · {duration}",
 		lastShort: "Последний запуск · {when}",
 		crashed: "Игра вылетела · код {code}",

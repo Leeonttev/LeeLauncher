@@ -2,6 +2,30 @@
 
 Раздел `## X.Y.Z` попадает в релиз и на экран обновления в лаунчере. Внутри раздела — блоки `<!-- ru -->` и `<!-- en -->`.
 
+## 0.1.2
+
+<!-- ru -->
+
+- Защита от уязвимости Java4Shell (CVE-2026-114938): для Java 17 и новее лаунчер сам добавляет аргументы, которые отключают уязвимое место. Выключается в настройках
+- Java, скачанная лаунчером, теперь обновляется до новой версии
+- Новая Java на компьютере видна в списке сразу, без перезапуска лаунчера
+- Выход из трея при запущенной игре спрашивает подтверждение и закрывает игру. Если лаунчер закрылся сам, после запуска он снова видит свою игру
+- Если Modrinth или CurseForge не открывается, каталог показывает, что загрузилось, и честно пишет, какой сайт недоступен, вместо бесконечной загрузки
+- Обновления модов проверяются по каждому сайту отдельно, а при недоступном сайте — через второй
+- Библиотека, уже установленная с одного сайта, больше не предлагается к скачиванию с другого
+- На пустой странице «Сборки» появилась кнопка «Импорт»
+
+<!-- en -->
+
+- Protection against the Java4Shell vulnerability (CVE-2026-114938): for Java 17 and newer the launcher adds arguments that disable the vulnerable code. Can be turned off in settings
+- Java downloaded by the launcher is now updated to newer versions
+- Newly installed Java shows up in the list right away, without restarting the launcher
+- Quitting from the tray while a game is running asks for confirmation and closes the game. If the launcher closed on its own, it finds its running game again after restart
+- If Modrinth or CurseForge can't be reached, the catalog shows what did load and says which site is unavailable instead of loading forever
+- Mod updates are checked per site, and through the other site when one is unavailable
+- A library already installed from one site is no longer offered again from the other
+- The empty Instances page now has an Import button
+
 ## 0.1.1
 
 <!-- ru -->

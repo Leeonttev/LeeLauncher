@@ -2,6 +2,7 @@ import { RotateCcw } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { GameVersionPicker } from "@/components/catalog/game-version-picker";
+import { SlowNotice } from "@/components/catalog/slow-notice";
 import { SourceSwitcher } from "@/components/catalog/source-switcher";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -175,6 +176,7 @@ function Categories({
 		body = (
 			// Столько же строк, сколько видно в готовом списке: появление категорий не сдвигает колонку.
 			<div aria-busy className="flex flex-col">
+				<SlowNotice loading source={source} className="mb-2 max-w-52" />
 				{Array.from({ length: VISIBLE_CATEGORIES }, (_, i) => (
 					<div key={i} className="flex h-8 items-center gap-2.5">
 						<Skeleton className="size-4 rounded-md" />

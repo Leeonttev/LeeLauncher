@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import type { ManualFile, ProjectHit, ResolveView } from "@/lib/api";
+import { SOURCE_NAMES } from "@/lib/catalog";
 import { closeDepsDialog, confirmDeps, manualDependencies, useInstallUi } from "@/lib/content-install";
 
 export function DepsDialog() {
@@ -81,16 +82,23 @@ function DepsBody({ view }: { view: ResolveView }) {
 	const [optional, setOptional] = useState<string[]>([]);
 	const manual = manualDependencies(view);
 	const manualIds = new Set(manual.map((file) => file.projectId));
+	// Уже стоит из другого каталога или файлом: не скачивается, строка только для сведения.
+	const elsewhere = view.installedElsewhere ?? [];
+	const elsewhereIds = new Set(elsewhere.map((item) => item.project.id));
+	const required = view.required.filter((hit) => !elsewhereIds.has(hit.id));
+	const optionalHits = view.optional.filter((hit) => !elsewhereIds.has(hit.id));
 	const isManual = (hit: ProjectHit) => hit.siteOnly || manualIds.has(hit.id);
 	// Ручные зависимости, которых нет среди обязательных проектов ответа, — отдельными строками.
-	const listed = new Set([...view.required, ...view.optional].map((hit) => hit.id));
+	const listed = new Set(
+		[...view.required, ...view.optional].map((hit) => hit.id).concat([...elsewhereIds]),
+	);
 	const manualOnly: ManualFile[] = manual.filter((file) => !listed.has(file.projectId));
-	const count = 1 + view.required.length + manualOnly.length + optional.length;
+	const count = 1 + required.length + manualOnly.length + optional.length;
 
 	return (
 		<>
 			<div className="-mx-2.5 mt-5 flex max-h-80 flex-col overflow-x-hidden overflow-y-auto px-2.5">
-				{view.required.map((hit) => (
+				{required.map((hit) => (
 					<DepRow
 						key={hit.id}
 						hit={hit}
@@ -98,6 +106,21 @@ function DepsBody({ view }: { view: ResolveView }) {
 						disabled
 						note={isManual(hit) ? t("catalog.deps.manual") : t("catalog.deps.required")}
 						siteOnly={isManual(hit)}
+					/>
+				))}
+				{elsewhere.map((item) => (
+					<DepRow
+						key={`elsewhere:${item.project.id}`}
+						hit={item.project}
+						checked
+						disabled
+						note={
+							item.installedFrom
+								? t("catalog.deps.installedFrom", {
+										source: SOURCE_NAMES[item.installedFrom],
+									})
+								: t("catalog.deps.installedFile")
+						}
 					/>
 				))}
 				{manualOnly.map((file) => (
@@ -115,7 +138,7 @@ function DepsBody({ view }: { view: ResolveView }) {
 						siteOnly
 					/>
 				))}
-				{view.optional.map((hit) => (
+				{optionalHits.map((hit) => (
 					<DepRow
 						key={hit.id}
 						hit={hit}

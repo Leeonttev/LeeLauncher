@@ -113,6 +113,7 @@ pub fn run() {
 			instances::commands::java_pick_file,
 			instances::commands::java_install,
 			instances::commands::java_install_cancel,
+			instances::commands::java_update,
 			instances::commands::settings_get,
 			instances::commands::settings_update,
 			instances::commands::system_memory,
@@ -192,6 +193,7 @@ pub fn run() {
 			launch::app_launch_lang,
 			app::app_set_lang,
 			presence::discord_status,
+			tray::app_quit,
 		])
 		.setup(move |app| {
 			let data_dir = paths::data_dir();
@@ -223,6 +225,11 @@ pub fn run() {
 					log::warn!("не удалось отправить {event}: {err}");
 				}
 			}));
+			// До окна: интерфейс сразу видит игры, которые пережили прошлый запуск лаунчера.
+			tauri::async_runtime::block_on(game::commands::recover(
+				app.handle().clone(),
+				launcher.clone(),
+			));
 			app.manage(presence::Presence::start(launcher.clone()));
 			app.manage(tray::Tray::default());
 			app.manage(launcher);

@@ -10,15 +10,15 @@ use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
 
 use super::install::{
-	self, ContentAction, ContentRequest, ContentTask, InstallPlan, InstallRequest, PlannedItem,
-	ProjectRef,
+	self, ContentAction, ContentRequest, ContentTask, InstallPlan, InstallRequest,
+	InstalledElsewhere, PlannedItem, ProjectRef,
 };
-use super::installed::{self, ContentItem, Detected, FileRef, Index};
+use super::installed::{self, ContentItem, Detected, FileRef, Index, UpdateInfo};
 use super::manual::ManualFile;
 use super::{
-	AllInfo, AlsoOn, CategoryTag, ContentVersion, EVENT_CHANGED, FileKey, InstallState, Project,
-	ProjectHit, ProjectType, SearchPage, SearchParams, SearchScope, SourceInfo, SourceKind,
-	VersionChannel, VersionFilter,
+	AllInfo, AlsoOn, CategoryTag, ContentSource, ContentVersion, EVENT_CHANGED, FileKey,
+	InstallState, Project, ProjectHit, ProjectType, SearchPage, SearchParams, SearchScope,
+	SourceFailure, SourceInfo, SourceKind, VersionChannel, VersionFilter,
 };
 use crate::download::Progress;
 use crate::downloads::{Download, Target};
@@ -32,6 +32,8 @@ type L<'a> = State<'a, Arc<Launcher>>;
 
 /// Обновления проверяются не чаще этого (без `force`).
 const UPDATES_TTL: Duration = Duration::from_secs(10 * 60);
+/// План установки: проект, версии и дерево зависимостей.
+const RESOLVE_DEADLINE: Duration = Duration::from_secs(30);
 
 fn emit_changed(app: &AppHandle, instance_id: &str) {
 	watch::emit(app, EVENT_CHANGED, instance_id);
@@ -200,7 +202,8 @@ pub async fn catalog_search(l: L<'_>, params: SearchParams) -> Result<SearchPage
 	if let Some(kind) = single {
 		query.source = kind;
 		let context = instance_items(&l, query.instance_id.as_deref()).await?;
-		let mut page = l.sources.get(kind).search(&query).await?;
+		let mut page =
+			super::within(super::UI_DEADLINE, l.sources.get(kind).search(&query)).await?;
 		if let Some(ctx) = context {
 			for hit in &mut page.hits {
 				hit.install = Some(ctx.state(hit));
@@ -217,7 +220,11 @@ pub async fn catalog_search(l: L<'_>, params: SearchParams) -> Result<SearchPage
 		));
 	}
 	let context = instance_items(&l, query.instance_id.as_deref()).await?;
-	let mut page = super::search_all::search(sources, &query, cursor.as_deref()).await?;
+	let mut page = super::within(
+		super::UI_DEADLINE,
+		super::search_all::search(sources, &query, cursor.as_deref()),
+	)
+	.await?;
 	let hits = std::mem::take(&mut page.rows)
 		.into_iter()
 		.map(|row| {
@@ -247,11 +254,8 @@ pub async fn catalog_categories(
 	source: Option<SourceKind>,
 	project_type: ProjectType,
 ) -> Result<Vec<CategoryTag>, AppError> {
-	let (all, _) = l
-		.sources
-		.get(source.unwrap_or_default())
-		.categories()
-		.await?;
+	let source = l.sources.get(source.unwrap_or_default());
+	let (all, _) = super::within(super::UI_DEADLINE, source.categories()).await?;
 	let of = |kind: &str| -> Vec<CategoryTag> {
 		all.iter()
 			.filter(|c| c.project_type == kind)
@@ -279,11 +283,15 @@ pub async fn catalog_project(
 	project_type: Option<ProjectType>,
 ) -> Result<Project, AppError> {
 	super::check_ref(&id)?;
+	let started = tokio::time::Instant::now();
 	let source = l.sources.get(source.unwrap_or_default());
-	let mut project = match project_type {
-		Some(kind) => source.project_by_slug(&id, kind).await?,
-		None => source.project(&id).await?,
-	};
+	let mut project = super::within(super::UI_DEADLINE, async {
+		match project_type {
+			Some(kind) => source.project_by_slug(&id, kind).await,
+			None => source.project(&id).await,
+		}
+	})
+	.await?;
 	if let Some(kind) = project_type.filter(|k| *k != ProjectType::Modpack) {
 		project.hit.project_type = kind;
 	}
@@ -292,7 +300,8 @@ pub async fn catalog_project(
 		let instance = &ctx.instance;
 		if !matches!(state, InstallState::Incompatible { .. }) {
 			let filter = VersionFilter::for_instance(instance, project.hit.project_type);
-			match source.project_versions(&project.hit.id, &filter).await {
+			let left = super::UI_DEADLINE.saturating_sub(started.elapsed());
+			match super::within(left, source.project_versions(&project.hit.id, &filter)).await {
 				Ok(versions) => project.best_version = super::pick_best(&versions).cloned(),
 				Err(err) => log::warn!("версии {}: {:?}", project.hit.id, err.code),
 			}
@@ -324,11 +333,12 @@ pub async fn catalog_versions(
 		loaders: loader.into_iter().collect(),
 	};
 	let source = source.unwrap_or_default();
-	let mut versions = l
-		.sources
-		.get(source)
-		.project_versions(&project_id, &filter)
-		.await?;
+	let catalog = l.sources.get(source);
+	let mut versions = super::within(
+		super::UI_DEADLINE,
+		catalog.project_versions(&project_id, &filter),
+	)
+	.await?;
 	if let Some(channel) = channel {
 		versions.retain(|v| v.channel == channel);
 	}
@@ -366,10 +376,8 @@ pub async fn catalog_version(
 	version_id: String,
 ) -> Result<ContentVersion, AppError> {
 	super::check_ref(&version_id)?;
-	l.sources
-		.get(source.unwrap_or_default())
-		.version(&version_id)
-		.await
+	let source = l.sources.get(source.unwrap_or_default());
+	super::within(super::UI_DEADLINE, source.version(&version_id)).await
 }
 
 /// Что покажет диалог установки.
@@ -389,6 +397,8 @@ pub struct ResolveView {
 	pub already_installed: bool,
 	/// Файлы «только с сайта» среди проекта и его зависимостей.
 	pub manual: Vec<ManualFile>,
+	/// Зависимости, которые уже стоят из другого каталога: не скачиваются.
+	pub installed_elsewhere: Vec<InstalledElsewhere>,
 }
 
 async fn plan(
@@ -398,12 +408,23 @@ async fn plan(
 ) -> Result<(InstallPlan, Vec<ContentItem>), AppError> {
 	let (index, items) = synced(l, &instance.id).await?;
 	let game_dir = l.layout.game_dir(&instance.id);
-	let plan = install::resolve(
-		l.sources.get(request.source).as_ref(),
-		instance,
-		&game_dir,
-		&index,
-		request,
+	let mod_ids = {
+		let (dir, idx) = (game_dir.clone(), index.clone());
+		tokio::task::spawn_blocking(move || install::local_mod_ids(&dir, &idx))
+			.await
+			.map_err(join_error)?
+	};
+	let source = l.sources.get(request.source);
+	let plan = super::within(
+		RESOLVE_DEADLINE,
+		install::resolve(
+			source.as_ref(),
+			instance,
+			&game_dir,
+			&index,
+			&mod_ids,
+			request,
+		),
 	)
 	.await?;
 	Ok((plan, items))
@@ -432,6 +453,7 @@ pub async fn catalog_resolve(
 			.collect(),
 		already_installed: plan.already_installed,
 		manual: plan.manual().iter().map(ManualFile::from_planned).collect(),
+		installed_elsewhere: plan.elsewhere.clone(),
 	})
 }
 
@@ -441,6 +463,8 @@ pub async fn catalog_resolve(
 pub struct Started {
 	pub download: Option<Download>,
 	pub manual: Vec<ManualFile>,
+	/// Каталоги, которые не ответили (только у `instance_content_update`): их файлы не обновлены.
+	pub failed_sources: Vec<SourceFailure>,
 }
 
 /// Ставит проект с зависимостями в фоне. Файлы «только с сайта» попадают в ждущие после задачи;
@@ -470,6 +494,7 @@ async fn start_install(
 			return Ok(Started {
 				download: None,
 				manual,
+				failed_sources: Vec::new(),
 			});
 		}
 		return Err(AppError::coded(
@@ -499,6 +524,7 @@ async fn start_install(
 	Ok(Started {
 		download: Some(download),
 		manual,
+		failed_sources: Vec::new(),
 	})
 }
 
@@ -664,8 +690,10 @@ pub async fn retry(
 #[serde(rename_all = "camelCase")]
 pub struct ContentList {
 	pub items: Vec<ContentItem>,
-	/// Последнее обращение к каталогу (определение файлов, проверка обновлений) не удалось: нет сети.
+	/// Последнее обращение к каталогам (определение файлов, проверка обновлений) не удалось ни у одного.
 	pub offline: bool,
+	/// Каталоги, которые не ответили в последний раз, хотя другие ответили.
+	pub failed_sources: Vec<SourceFailure>,
 }
 
 /// Контент сборки без сети. Неизвестные файлы опознаются в фоне.
@@ -684,6 +712,7 @@ pub async fn instance_content(
 	Ok(ContentList {
 		items,
 		offline: l.content_locks.is_offline(&id),
+		failed_sources: l.content_locks.failed(&id),
 	})
 }
 
@@ -705,11 +734,15 @@ async fn reconcile_manual(l: &Launcher, id: &str, index: &Index) {
 
 fn needs_identify(index: &Index) -> bool {
 	!installed::unidentified(index, installed::now_secs()).is_empty()
-		|| index.files.values().any(|e| {
-			e.source
-				.as_ref()
-				.is_some_and(|s| s.title.is_none() || s.author.is_none())
-		})
+		|| index
+			.files
+			.values()
+			.any(|e| e.source.as_ref().is_some_and(incomplete))
+}
+
+/// Записи не хватает данных проекта: названия, автора или slug (старые обновления писали в slug id).
+fn incomplete(s: &installed::SourceRef) -> bool {
+	s.title.is_none() || s.author.is_none() || s.slug.as_deref() == Some(s.project_id.as_str())
 }
 
 fn spawn_identify(app: AppHandle, l: Arc<Launcher>, instance_id: String) {
@@ -717,38 +750,149 @@ fn spawn_identify(app: AppHandle, l: Arc<Launcher>, instance_id: String) {
 		return;
 	}
 	tauri::async_runtime::spawn(async move {
-		let result = identify(&l, &instance_id).await;
+		let done = identify(&l, &instance_id).await;
 		l.content_locks.end_identify(&instance_id);
-		match result {
-			Ok(changed) => {
-				let was_offline = l.content_locks.is_offline(&instance_id);
-				l.content_locks.set_offline(&instance_id, false);
-				if changed || was_offline {
-					emit_changed(&app, &instance_id);
-				}
-			}
+		let changed = match done.result {
+			Ok(changed) => changed,
 			Err(err) => {
-				if is_offline_error(&err) && !l.content_locks.is_offline(&instance_id) {
-					l.content_locks.set_offline(&instance_id, true);
-					emit_changed(&app, &instance_id);
-				}
 				log::warn!(
 					"контент {instance_id}: определение файлов не удалось: {:?} {}",
 					err.code,
 					err.details.unwrap_or_default()
 				);
+				false
 			}
+		};
+		if changed || done.state_changed {
+			emit_changed(&app, &instance_id);
 		}
 	});
 }
 
-/// Опознаёт файлы без источника: Modrinth по sha1, затем CurseForge по отпечатку.
-pub(crate) async fn identify(l: &Launcher, instance_id: &str) -> Result<bool, AppError> {
+/// Ответы каталогов при опознании и проверке обновлений: кто не ответил.
+#[derive(Default)]
+struct Failures {
+	needed: HashSet<SourceKind>,
+	errors: Vec<(SourceKind, AppError)>,
+	/// Не ответивший каталог → кто проверил часть его файлов и сколько.
+	covered: HashMap<SourceKind, (SourceKind, u32)>,
+}
+
+impl Failures {
+	fn need(&mut self, kind: SourceKind) {
+		self.needed.insert(kind);
+	}
+
+	fn fail(&mut self, kind: SourceKind, err: AppError) {
+		log::warn!("каталог {}: {:?}", kind.as_str(), err.code);
+		self.needed.insert(kind);
+		if !self.errors.iter().any(|(k, _)| *k == kind) {
+			self.errors.push((kind, err));
+		}
+	}
+
+	fn failed(&self, kind: SourceKind) -> bool {
+		self.errors.iter().any(|(k, _)| *k == kind)
+	}
+
+	/// Каталоги, чьи файлы стоит проверить через другой: не ответили, а другой включён и цел.
+	fn fallbacks(&self, enabled: impl Fn(SourceKind) -> bool) -> Vec<(SourceKind, SourceKind)> {
+		self.errors
+			.iter()
+			.filter(|(_, err)| super::worth_fallback(err))
+			.map(|(kind, _)| (*kind, kind.other()))
+			.filter(|(_, alt)| enabled(*alt) && !self.failed(*alt))
+			.collect()
+	}
+
+	/// Подстраховка ответила: `alt` нашёл `files` файлов не ответившего `kind`.
+	fn cover(&mut self, kind: SourceKind, alt: SourceKind, files: usize) {
+		self.needed.insert(alt);
+		self.covered
+			.insert(kind, (alt, u32::try_from(files).unwrap_or(u32::MAX)));
+	}
+
+	/// Не ответил ни один нужный каталог — общая ошибка.
+	fn all_failed(&self) -> Option<AppError> {
+		(!self.errors.is_empty() && self.errors.len() >= self.needed.len())
+			.then(|| super::all_failed(self.errors.iter().map(|(_, e)| e.clone()).collect()))
+	}
+
+	fn list(&self) -> Vec<SourceFailure> {
+		let mut list: Vec<SourceFailure> = self
+			.errors
+			.iter()
+			.map(|(source, err)| SourceFailure {
+				source: *source,
+				code: err.code,
+				covered_by: self
+					.covered
+					.get(source)
+					.filter(|(_, files)| *files > 0)
+					.map(|(by, files)| super::Coverage {
+						source: *by,
+						files: *files,
+					}),
+			})
+			.collect();
+		list.sort_by_key(|f| SourceKind::ALL.iter().position(|k| *k == f.source));
+		list
+	}
+}
+
+/// Опознаёт файлы без источника: Modrinth по sha1, затем CurseForge по отпечатку. Каждый каталог
+/// ждём не дольше [`super::SOURCE_DEADLINE`]; не ответивший — во втором значении, а ошибка —
+/// только если не ответил ни один.
+///
+/// Итог по каталогам (`offline`, `failedSources` из `instance_content`) записывается при любом
+/// исходе, если каталоги спрашивали: прежний список не остаётся висеть после новой ошибки.
+pub(crate) async fn identify(l: &Launcher, instance_id: &str) -> Identified {
+	let mut failures = Failures::default();
+	let result = identify_with(l, instance_id, &mut failures).await;
+	let state_changed = record_checked(l, instance_id, &result, &failures);
+	Identified {
+		result,
+		state_changed,
+	}
+}
+
+pub(crate) struct Identified {
+	/// `true` — индекс изменился.
+	pub result: Result<bool, AppError>,
+	/// Изменились `offline` или `failedSources` сборки.
+	pub state_changed: bool,
+}
+
+/// Записывает, какие каталоги не ответили. Каталоги не спрашивали и вышла ошибка — ничего
+/// не известно, прежнее остаётся. Не ответил ни один и все — без сети — `offline`.
+fn record_checked(
+	l: &Launcher,
+	instance_id: &str,
+	result: &Result<bool, AppError>,
+	failures: &Failures,
+) -> bool {
+	if failures.needed.is_empty() && result.is_err() {
+		return false;
+	}
+	let offline =
+		failures.all_failed().is_some() && failures.errors.iter().all(|(_, e)| is_offline_error(e));
+	let failed = if offline { Vec::new() } else { failures.list() };
+	let was_offline = l.content_locks.is_offline(instance_id);
+	l.content_locks.set_offline(instance_id, offline);
+	let failed_changed = l.content_locks.set_failed(instance_id, failed);
+	was_offline != offline || failed_changed
+}
+
+async fn identify_with(
+	l: &Launcher,
+	instance_id: &str,
+	failures: &mut Failures,
+) -> Result<bool, AppError> {
 	let (asked, untitled, known_fp, paths) = {
 		let (index, _) = synced(l, instance_id).await?;
 		let mut untitled: HashMap<SourceKind, Vec<String>> = HashMap::new();
 		for s in index.files.values().filter_map(|e| e.source.as_ref()) {
-			if s.title.is_none() || s.author.is_none() {
+			if incomplete(s) {
 				untitled
 					.entry(s.kind)
 					.or_default()
@@ -772,14 +916,20 @@ pub(crate) async fn identify(l: &Launcher, instance_id: &str) -> Result<bool, Ap
 			paths,
 		)
 	};
-	let mut found = if asked.is_empty() {
-		HashMap::new()
-	} else {
-		l.sources
-			.get(SourceKind::Modrinth)
-			.identify(&FileKey::of_sha1s(&asked))
-			.await?
-	};
+	let mut found = HashMap::new();
+	if !asked.is_empty() {
+		failures.need(SourceKind::Modrinth);
+		let modrinth = l.sources.get(SourceKind::Modrinth);
+		match super::within(
+			super::SOURCE_DEADLINE,
+			modrinth.identify(&FileKey::of_sha1s(&asked)),
+		)
+		.await
+		{
+			Ok(list) => found = list,
+			Err(err) => failures.fail(SourceKind::Modrinth, err),
+		}
+	}
 	// Не узнал Modrinth — CurseForge по отпечатку (отпечаток считается один раз и хранится).
 	let mut fingerprints: HashMap<String, u32> = HashMap::new();
 	let rest: Vec<String> = asked
@@ -788,6 +938,7 @@ pub(crate) async fn identify(l: &Launcher, instance_id: &str) -> Result<bool, Ap
 		.cloned()
 		.collect();
 	if !rest.is_empty() && l.sources.enabled(SourceKind::Curseforge) {
+		failures.need(SourceKind::Curseforge);
 		fingerprints = fingerprints_of(l, instance_id, &rest, &known_fp, &paths).await;
 		let keys: Vec<FileKey> = rest
 			.iter()
@@ -799,9 +950,10 @@ pub(crate) async fn identify(l: &Launcher, instance_id: &str) -> Result<bool, Ap
 				})
 			})
 			.collect();
-		match l.sources.get(SourceKind::Curseforge).identify(&keys).await {
+		let curseforge = l.sources.get(SourceKind::Curseforge);
+		match super::within(super::SOURCE_DEADLINE, curseforge.identify(&keys)).await {
 			Ok(cf) => found.extend(cf),
-			Err(err) => log::warn!("опознание в CurseForge: {:?}", err.code),
+			Err(err) => failures.fail(SourceKind::Curseforge, err),
 		}
 	}
 	let mut by_source: HashMap<SourceKind, Vec<String>> = untitled;
@@ -815,20 +967,30 @@ pub(crate) async fn identify(l: &Launcher, instance_id: &str) -> Result<bool, Ap
 	for (kind, mut ids) in by_source {
 		ids.sort();
 		ids.dedup();
-		if ids.is_empty() || !l.sources.enabled(kind) {
+		if ids.is_empty() || !l.sources.enabled(kind) || failures.failed(kind) {
 			continue;
 		}
-		match l.sources.get(kind).projects(&ids).await {
+		failures.need(kind);
+		let source = l.sources.get(kind);
+		match super::within(super::SOURCE_DEADLINE, source.projects(&ids)).await {
 			Ok(list) => hits.extend(list.into_iter().map(|h| ((h.source, h.id.clone()), h))),
-			Err(err) if kind == SourceKind::Modrinth => return Err(err),
-			Err(err) => log::warn!("проекты {}: {:?}", kind.as_str(), err.code),
+			Err(err) => failures.fail(kind, err),
 		}
 	}
+	if let Some(err) = failures.all_failed() {
+		return Err(err);
+	}
+	// Кто-то не ответил — «не найдено» не запоминаем, иначе файл не проверится сутки.
+	let checked: &[String] = if failures.errors.is_empty() {
+		&asked
+	} else {
+		&[]
+	};
 	let _guard = l.content_locks.lock(instance_id).await;
 	let (mut index, _) = sync_index(l, instance_id).await?;
 	let changed = install::apply_identified(
 		&mut index,
-		&asked,
+		checked,
 		&found,
 		&hits,
 		&fingerprints,
@@ -878,63 +1040,193 @@ async fn fingerprints_of(
 	.unwrap_or_default()
 }
 
-/// Проверяет обновления контента из каталогов (не чаще раза в 10 минут без `force`) и возвращает
-/// весь список; у файлов с обновлением заполнено `update`.
+/// Файлы, выбранные `pick`, для подстраховки в `alt`. CurseForge узнаёт файл по отпечатку:
+/// если его нет в индексе, он считается по файлу. Второе значение — отпечатки (sha1 → отпечаток).
+async fn fallback_files(
+	l: &Launcher,
+	instance_id: &str,
+	index: &Index,
+	alt: SourceKind,
+	pick: impl Fn(&String, &installed::Entry, &installed::SourceRef) -> bool,
+) -> (Vec<(String, FileKey)>, HashMap<String, u32>) {
+	let chosen: Vec<(&String, &installed::Entry)> = index
+		.files
+		.iter()
+		.filter(|(key, e)| e.source.as_ref().is_some_and(|s| pick(key, e, s)))
+		.collect();
+	let mut fingerprints = HashMap::new();
+	if alt == SourceKind::Curseforge && !chosen.is_empty() {
+		let sha1s: Vec<String> = chosen.iter().map(|(_, e)| e.sha1.clone()).collect();
+		let known: HashMap<String, u32> = chosen
+			.iter()
+			.filter_map(|(_, e)| Some((e.sha1.clone(), e.fingerprint?)))
+			.collect();
+		let paths: HashMap<String, String> = chosen
+			.iter()
+			.map(|(key, e)| (e.sha1.clone(), (*key).clone()))
+			.collect();
+		fingerprints = fingerprints_of(l, instance_id, &sha1s, &known, &paths).await;
+	}
+	let files = chosen
+		.into_iter()
+		.map(|(key, e)| {
+			(
+				key.clone(),
+				FileKey {
+					sha1: e.sha1.clone(),
+					fingerprint: e.fingerprint.or_else(|| fingerprints.get(&e.sha1).copied()),
+					project_id: None,
+				},
+			)
+		})
+		.collect();
+	(files, fingerprints)
+}
+
+/// Список контента после проверки обновлений.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentUpdates {
+	pub items: Vec<ContentItem>,
+	/// Каталоги, которые не ответили: их файлы в этот раз не проверены.
+	pub failed_sources: Vec<SourceFailure>,
+}
+
+type UpdateGroups = Vec<(ProjectType, Vec<(String, FileKey)>)>;
+
+/// Последние версии файлов одного каталога: найденное и проверенные ключи. Ошибка — каталог
+/// не ответил; то, что он успел проверить до неё, тоже отбрасывается.
+async fn latest_of(
+	source: Arc<dyn ContentSource>,
+	instance: &Instance,
+	groups: UpdateGroups,
+) -> Result<(HashMap<String, ContentVersion>, HashSet<String>), AppError> {
+	let mut latest = HashMap::new();
+	let mut checked = HashSet::new();
+	for (kind, files) in groups {
+		let keys: Vec<FileKey> = files.iter().map(|(_, k)| k.clone()).collect();
+		let filter = install::update_filter(instance, kind);
+		latest.extend(source.latest(&keys, &filter).await?);
+		checked.extend(files.into_iter().map(|(k, _)| k));
+	}
+	Ok((latest, checked))
+}
+
+/// Проверяет обновления контента (не чаще раза в 10 минут без `force`). Каждый каталог — отдельно
+/// и не дольше [`super::SOURCE_DEADLINE`]; ошибка — только если не ответил ни один нужный.
 #[tauri::command]
 pub async fn instance_content_updates(
 	app: AppHandle,
 	l: L<'_>,
 	id: String,
 	force: Option<bool>,
-) -> Result<Vec<ContentItem>, AppError> {
+) -> Result<ContentUpdates, AppError> {
 	let instance = l.instances.get(&id).await?;
 	if !force.unwrap_or(false) && l.content_locks.updates_fresh(&id, UPDATES_TTL) {
-		return Ok(synced(&l, &id).await?.1);
+		return Ok(ContentUpdates {
+			items: synced(&l, &id).await?.1,
+			failed_sources: l.content_locks.failed(&id),
+		});
 	}
 	let (index, _) = synced(&l, &id).await?;
-	let mut groups: HashMap<(SourceKind, ProjectType), Vec<(String, FileKey)>> = HashMap::new();
+	let mut groups: HashMap<SourceKind, HashMap<ProjectType, Vec<(String, FileKey)>>> =
+		HashMap::new();
 	for (key, entry) in &index.files {
 		if let Some(s) = &entry.source
 			&& l.sources.enabled(s.kind)
 			&& let Ok((kind, _)) = installed::parse_key(key)
 		{
-			groups.entry((s.kind, kind)).or_default().push((
-				key.clone(),
-				FileKey {
-					sha1: entry.sha1.clone(),
-					fingerprint: entry.fingerprint,
-					project_id: Some(s.project_id.clone()),
-				},
-			));
+			groups
+				.entry(s.kind)
+				.or_default()
+				.entry(kind)
+				.or_default()
+				.push((
+					key.clone(),
+					FileKey {
+						sha1: entry.sha1.clone(),
+						fingerprint: entry.fingerprint,
+						project_id: Some(s.project_id.clone()),
+					},
+				));
 		}
 	}
+	let mut take = |kind: SourceKind| -> Option<UpdateGroups> {
+		let list: UpdateGroups = groups.remove(&kind)?.into_iter().collect();
+		(!list.is_empty()).then_some(list)
+	};
+	let (modrinth, curseforge) = (take(SourceKind::Modrinth), take(SourceKind::Curseforge));
+	let check = |kind: SourceKind, groups: Option<UpdateGroups>| {
+		let source = l.sources.get(kind);
+		let instance = &instance;
+		async move {
+			let groups = groups?;
+			Some(super::within(super::SOURCE_DEADLINE, latest_of(source, instance, groups)).await)
+		}
+	};
+	let (from_modrinth, from_curseforge) = tokio::join!(
+		check(SourceKind::Modrinth, modrinth),
+		check(SourceKind::Curseforge, curseforge)
+	);
+	let mut failures = Failures::default();
 	let mut latest = HashMap::new();
 	let mut checked = HashSet::new();
-	for ((source, kind), files) in groups {
-		let keys: Vec<FileKey> = files.iter().map(|(_, k)| k.clone()).collect();
-		let filter = install::update_filter(&instance, kind);
-		match l.sources.get(source).latest(&keys, &filter).await {
-			Ok(found) => latest.extend(found),
-			Err(err) if source == SourceKind::Modrinth => {
-				if is_offline_error(&err) {
-					l.content_locks.set_offline(&id, true);
-				}
-				return Err(err);
+	for (kind, result) in [
+		(SourceKind::Modrinth, from_modrinth),
+		(SourceKind::Curseforge, from_curseforge),
+	] {
+		match result {
+			None => {}
+			Some(Ok((found, keys))) => {
+				failures.need(kind);
+				latest.extend(found);
+				checked.extend(keys);
 			}
-			// CurseForge не ответил — его файлы просто не проверены в этот раз.
-			Err(err) => {
-				log::warn!("обновления CurseForge: {:?}", err.code);
-				continue;
-			}
+			Some(Err(err)) => failures.fail(kind, err),
 		}
-		checked.extend(files.into_iter().map(|(k, _)| k));
+	}
+	// Каталог не ответил (не «не нашёл») — его файлы проверяются во втором, одной пачкой.
+	let mut covered: HashMap<String, Option<UpdateInfo>> = HashMap::new();
+	let mut fingerprints = HashMap::new();
+	for (kind, alt) in failures.fallbacks(|k| l.sources.enabled(k)) {
+		let (files, fps) = fallback_files(&l, &id, &index, alt, |_, _, s| s.kind == kind).await;
+		if files.is_empty() {
+			continue;
+		}
+		let source = l.sources.get(alt);
+		let check = install::fallback_latest(source.as_ref(), &instance, &files);
+		match super::within(super::SOURCE_DEADLINE, check).await {
+			Ok(found) => {
+				failures.cover(kind, alt, found.len());
+				covered.extend(found.into_iter().map(|(key, c)| (key, c.update())));
+				fingerprints.extend(fps);
+			}
+			Err(err) => log::warn!(
+				"подстраховка {} через {}: {:?}",
+				kind.as_str(),
+				alt.as_str(),
+				err.code
+			),
+		}
+	}
+	if let Some(err) = failures.all_failed() {
+		if is_offline_error(&err) {
+			l.content_locks.set_offline(&id, true);
+			l.content_locks.set_failed(&id, Vec::new());
+		}
+		return Err(err);
 	}
 	l.content_locks.set_offline(&id, false);
-	l.content_locks.mark_updates_checked(&id);
+	let failed_sources = failures.list();
+	l.content_locks.set_failed(&id, failed_sources.clone());
+	if failed_sources.is_empty() {
+		l.content_locks.mark_updates_checked(&id);
+	}
 	let items = {
 		let _guard = l.content_locks.lock(&id).await;
 		let (mut index, _) = sync_index(&l, &id).await?;
 		install::apply_updates(&mut index, &latest, &checked);
+		install::apply_fallback(&mut index, &covered, &fingerprints);
 		let game_dir = l.layout.game_dir(&id);
 		let path = installed::index_path(&l.layout.instance_dir(&id));
 		tokio::task::spawn_blocking(move || {
@@ -945,7 +1237,10 @@ pub async fn instance_content_updates(
 		.map_err(join_error)??
 	};
 	emit_changed(&app, &id);
-	Ok(items)
+	Ok(ContentUpdates {
+		items,
+		failed_sources,
+	})
 }
 
 /// Игра запущена — файлы контента заняты.
@@ -977,17 +1272,68 @@ async fn start_update(
 	instance_id: String,
 	keys: Option<Vec<String>>,
 ) -> Result<Started, AppError> {
-	l.instances.get(&instance_id).await?;
+	let instance = l.instances.get(&instance_id).await?;
 	ensure_not_running(&l, &instance_id)?;
 	let (index, _) = synced(&l, &instance_id).await?;
 	let mut all = Vec::new();
-	for kind in SourceKind::ALL {
-		if !l.sources.enabled(kind) {
+	let mut failures = Failures::default();
+	// Каталоги планируются одновременно; не ответивший уходит в `failedSources`.
+	let plan = |kind: SourceKind| {
+		let enabled = l.sources.enabled(kind);
+		let source = l.sources.get(kind);
+		let (index, keys) = (&index, keys.as_deref());
+		async move {
+			if !enabled {
+				return None;
+			}
+			let plan = install::plan_update(source.as_ref(), kind, index, keys);
+			Some(super::within(super::SOURCE_DEADLINE, plan).await)
+		}
+	};
+	let (from_modrinth, from_curseforge) =
+		tokio::join!(plan(SourceKind::Modrinth), plan(SourceKind::Curseforge));
+	for (kind, result) in [
+		(SourceKind::Modrinth, from_modrinth),
+		(SourceKind::Curseforge, from_curseforge),
+	] {
+		let Some(result) = result else { continue };
+		failures.need(kind);
+		match result {
+			Ok(items) => all.extend(items),
+			Err(err) => failures.fail(kind, err),
+		}
+	}
+	// Обновления не ответившего каталога ищутся во втором; найденное ставится оттуда.
+	for (kind, alt) in failures.fallbacks(|k| l.sources.enabled(k)) {
+		let (files, _) = fallback_files(&l, &instance_id, &index, alt, |key, e, s| {
+			keys.as_deref().is_none_or(|k| k.contains(key))
+				&& e.update.as_ref().is_some_and(|u| u.catalog(s) == kind)
+		})
+		.await;
+		if files.is_empty() {
 			continue;
 		}
-		let source = l.sources.get(kind);
-		all.extend(install::plan_update(source.as_ref(), kind, &index, keys.as_deref()).await?);
+		let source = l.sources.get(alt);
+		let plan = install::plan_fallback(source.as_ref(), &instance, &index, &files);
+		match super::within(super::SOURCE_DEADLINE, plan).await {
+			Ok((items, found)) => {
+				failures.cover(kind, alt, found);
+				all.extend(items);
+			}
+			Err(err) => log::warn!(
+				"подстраховка {} через {}: {:?}",
+				kind.as_str(),
+				alt.as_str(),
+				err.code
+			),
+		}
 	}
+	if all.is_empty()
+		&& let Some(err) = failures.all_failed()
+	{
+		return Err(err);
+	}
+	let failed_sources = failures.list();
 	let (manual_items, items): (Vec<PlannedItem>, Vec<PlannedItem>) =
 		all.into_iter().partition(|i| i.site_only);
 	let manual: Vec<ManualFile> = manual_items.iter().map(ManualFile::from_planned).collect();
@@ -1004,6 +1350,7 @@ async fn start_update(
 		return Ok(Started {
 			download: None,
 			manual,
+			failed_sources,
 		});
 	};
 	let single = items.len() == 1;
@@ -1029,6 +1376,7 @@ async fn start_update(
 	Ok(Started {
 		download: Some(download),
 		manual,
+		failed_sources,
 	})
 }
 
@@ -1328,6 +1676,7 @@ mod tests {
 				version_id: "v2".into(),
 				number: "2".into(),
 				site_only: false,
+				via: None,
 			}),
 			from_modpack: false,
 			sha1: String::new(),
@@ -1419,5 +1768,55 @@ mod tests {
 				.code,
 			ErrorCode::FileNotFound
 		);
+	}
+
+	#[test]
+	fn failures_fall_back_only_when_silent() {
+		let both = |_: SourceKind| true;
+		let mut f = Failures::default();
+		f.need(SourceKind::Curseforge);
+		f.fail(SourceKind::Modrinth, super::super::timed_out());
+		assert_eq!(
+			f.fallbacks(both),
+			[(SourceKind::Modrinth, SourceKind::Curseforge)]
+		);
+		assert!(f.fallbacks(|k| k == SourceKind::Modrinth).is_empty());
+
+		f.cover(SourceKind::Modrinth, SourceKind::Curseforge, 3);
+		assert!(f.all_failed().is_none());
+		let list = f.list();
+		assert_eq!(list.len(), 1);
+		assert_eq!(
+			list[0].covered_by,
+			Some(super::super::Coverage {
+				source: SourceKind::Curseforge,
+				files: 3,
+			})
+		);
+		let json = serde_json::to_value(&list[0]).unwrap();
+		assert_eq!(
+			json,
+			serde_json::json!({
+				"source": "modrinth",
+				"code": "source_unavailable",
+				"coveredBy": { "source": "curseforge", "files": 3 }
+			})
+		);
+
+		// «Не найдено» — ответ каталога, а не молчание.
+		let mut f = Failures::default();
+		f.fail(
+			SourceKind::Modrinth,
+			AppError::new(ErrorCode::ContentNotFound),
+		);
+		assert!(f.fallbacks(both).is_empty());
+
+		// Второй тоже не ответил — подстраховки нет, ничего не найдено — `coveredBy: null`.
+		let mut f = Failures::default();
+		f.fail(SourceKind::Modrinth, AppError::new(ErrorCode::Network));
+		f.fail(SourceKind::Curseforge, AppError::new(ErrorCode::Network));
+		assert!(f.fallbacks(both).is_empty());
+		f.cover(SourceKind::Modrinth, SourceKind::Curseforge, 0);
+		assert!(f.list().iter().all(|s| s.covered_by.is_none()));
 	}
 }

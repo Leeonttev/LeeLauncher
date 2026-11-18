@@ -1,12 +1,14 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { toast } from "sonner";
-import { contentApi, type ContentItem, type FileRef } from "@/lib/api";
+import { contentApi, type ContentItem, type FailedSource, type FileRef } from "@/lib/api";
 import { errorText, toAppError, type AppError } from "@/lib/errors";
 
 export type InstanceContent = {
 	status: "loading" | "ready" | "error";
 	items: ContentItem[];
 	offline: boolean;
+	/** Каталоги, не ответившие при последнем опознании или проверке файлов. */
+	failedSources: FailedSource[];
 	error: AppError | null;
 };
 
@@ -24,17 +26,36 @@ function put(id: string, value: InstanceContent) {
 	emit();
 }
 
+/** По одной записи на каталог. */
+export function uniqueFailures(failed: FailedSource[] | undefined): FailedSource[] {
+	const seen = new Map<string, FailedSource>();
+	for (const failure of failed ?? []) if (!seen.has(failure.source)) seen.set(failure.source, failure);
+	return [...seen.values()];
+}
+
 /** `retry` — повтор после сбоя, не больше одного. */
 export async function loadContent(id: string, retry = true) {
 	const seq = ++requestSeq;
 	requests.set(id, seq);
 	const previous = cache[id];
 	if (!previous || previous.status === "error")
-		put(id, { status: "loading", items: previous?.items ?? [], offline: false, error: null });
+		put(id, {
+			status: "loading",
+			items: previous?.items ?? [],
+			offline: false,
+			failedSources: previous?.failedSources ?? [],
+			error: null,
+		});
 	try {
 		const result = await contentApi.list(id);
 		if (requests.get(id) !== seq) return;
-		put(id, { status: "ready", items: result.items, offline: result.offline, error: null });
+		put(id, {
+			status: "ready",
+			items: result.items,
+			offline: result.offline,
+			failedSources: uniqueFailures(result.failedSources),
+			error: null,
+		});
 	} catch (err) {
 		if (requests.get(id) !== seq) return;
 		console.error("instance_content", err);
@@ -43,7 +64,7 @@ export async function loadContent(id: string, retry = true) {
 			if (retry) setTimeout(() => void loadContent(id, false), 1000);
 			return;
 		}
-		put(id, { status: "error", items: [], offline: false, error: toAppError(err) });
+		put(id, { status: "error", items: [], offline: false, failedSources: [], error: toAppError(err) });
 	}
 }
 
@@ -59,6 +80,10 @@ export function applyAddedContent(id: string, added: ContentItem[]) {
 		});
 	}
 	void loadContent(id);
+}
+
+export function getContentCache(): Record<string, InstanceContent> {
+	return cache;
 }
 
 export function ensureContent(id: string) {
@@ -94,6 +119,10 @@ const UPDATES_INTERVAL = 10 * 60 * 1000;
 export type UpdatesCheck = {
 	status: "checking" | "done" | "error";
 	checkedAt: number | null;
+	/** `done`: каталоги, которые не ответили, — их файлы не проверены (кроме `coveredBy`). */
+	failedSources: FailedSource[];
+	/** `error`: не ответил никто. */
+	error: AppError | null;
 };
 
 let checks: Record<string, UpdatesCheck> = {};
@@ -107,11 +136,24 @@ export async function checkContentUpdates(id: string, force = false) {
 	const check = checks[id];
 	if (check?.status === "checking") return;
 	if (!force && check?.checkedAt && Date.now() - check.checkedAt < UPDATES_INTERVAL) return;
-	checks = { ...checks, [id]: { status: "checking", checkedAt: check?.checkedAt ?? null } };
+	checks = {
+		...checks,
+		[id]: { status: "checking", checkedAt: check?.checkedAt ?? null, failedSources: [], error: null },
+	};
 	emit();
 	try {
-		const items = await contentApi.updates(id, force);
-		checks = { ...checks, [id]: { status: "done", checkedAt: Date.now() } };
+		const result = await contentApi.updates(id, force);
+		const { items } = result;
+		const failed = result.failedSources ?? [];
+		checks = {
+			...checks,
+			[id]: {
+				status: "done",
+				checkedAt: Date.now(),
+				failedSources: uniqueFailures(failed),
+				error: null,
+			},
+		};
 		const entry = cache[id];
 		if (entry?.status === "ready") {
 			put(id, {
@@ -124,7 +166,15 @@ export async function checkContentUpdates(id: string, force = false) {
 		} else emit();
 	} catch (err) {
 		console.error("instance_content_updates", err);
-		checks = { ...checks, [id]: { status: "error", checkedAt: check?.checkedAt ?? null } };
+		checks = {
+			...checks,
+			[id]: {
+				status: "error",
+				checkedAt: check?.checkedAt ?? null,
+				failedSources: [],
+				error: toAppError(err),
+			},
+		};
 		emit();
 	}
 }

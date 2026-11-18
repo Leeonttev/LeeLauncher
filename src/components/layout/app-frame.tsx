@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Titlebar } from "@/components/layout/titlebar";
 import { LanguageOnboarding } from "@/components/onboarding/language-onboarding";
+import { QuitDialog } from "@/components/quit-dialog";
 import { UpdateGate } from "@/components/updates/update-gate";
 import { UpdateNotesDialog } from "@/components/updates/update-notes-dialog";
 import { useLanguage } from "@/lib/i18n";
@@ -54,6 +55,7 @@ export function AppFrame() {
 				)}
 			</AnimatePresence>
 			<UpdateNotesDialog />
+			<QuitDialog />
 		</div>
 	);
 }
