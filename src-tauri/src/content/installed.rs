@@ -559,7 +559,7 @@ pub fn detect_type(path: &Path) -> Detected {
 			continue;
 		};
 		let entry_name = entry.name().map(|n| n.into_owned()).unwrap_or_default();
-		let top = entry_name.split('/').next().unwrap_or_default();
+		let top = entry_name.split(['/', '\\']).next().unwrap_or_default();
 		match top {
 			"pack.mcmeta" => mcmeta = true,
 			"data" => data = true,
@@ -647,14 +647,25 @@ pub fn copy_checked(src: &Path, tmp: &Path, sha1: Option<&str>) -> Result<(), Ap
 	copied
 }
 
-/// Ошибка файла: занят другим процессом (Windows, ERROR_SHARING_VIOLATION / LOCK_VIOLATION) —
-/// `file_in_use`, иначе `storage`.
+/// Ошибка файла: занят другим процессом — `file_in_use`, диск полон — `not_enough_space`,
+/// иначе `storage` (без прав — с пояснением: на macOS папку закрывает «Конфиденциальность»).
 pub fn io_error(path: &Path, err: &std::io::Error) -> AppError {
-	if matches!(err.raw_os_error(), Some(32 | 33)) {
-		AppError::coded(ErrorCode::FileInUse, path.display().to_string())
-	} else {
-		storage(path, err)
+	if is_in_use(err) {
+		return AppError::coded(ErrorCode::FileInUse, path.display().to_string());
 	}
+	match err.kind() {
+		std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => AppError::coded(
+			ErrorCode::NotEnoughSpace,
+			format!("{}: {err}", path.display()),
+		),
+		std::io::ErrorKind::PermissionDenied => storage(path, format!("нет доступа: {err}")),
+		_ => storage(path, err),
+	}
+}
+
+/// ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION. На Unix файлы не запираются, а 32/33 там — другие ошибки.
+fn is_in_use(err: &std::io::Error) -> bool {
+	cfg!(windows) && matches!(err.raw_os_error(), Some(32 | 33))
 }
 
 /// Замки индекса по сборкам и отметки «идёт опознание».
@@ -929,6 +940,11 @@ mod tests {
 		assert_eq!(
 			detect_type(&p("d.zip")),
 			Detected::Kind(ProjectType::Datapack)
+		);
+		zip_with(&p("w.zip"), &["shaders\\final.fsh"]);
+		assert_eq!(
+			detect_type(&p("w.zip")),
+			Detected::Kind(ProjectType::Shader)
 		);
 		zip_with(&p("r.zip"), &["pack.mcmeta", "assets/minecraft/x.png"]);
 		assert_eq!(

@@ -36,6 +36,7 @@ import {
 import type { Account } from "@/lib/api";
 import { gamesOfAccount, useInstances } from "@/lib/instances";
 import { cn } from "@/lib/utils";
+import { titlebarClasses } from "@/components/layout/titlebar-layout";
 
 const spring = { type: "spring", stiffness: 500, damping: 35 } as const;
 
@@ -46,7 +47,7 @@ export function AccountSwitcher() {
 
 	if (loading) {
 		return (
-			<div data-tauri-drag-region aria-busy className="flex h-10 items-center gap-2.5 px-2">
+			<div data-tauri-drag-region aria-busy className="flex h-10 items-center gap-2.5 pr-2.5 pl-1">
 				{showSkeleton && (
 					<>
 						<Skeleton className="pointer-events-none size-8 shrink-0 rounded-sm bg-sidebar-accent" />
@@ -72,6 +73,7 @@ type SwitcherButtonProps = ComponentProps<"button"> & {
 	chevron?: boolean;
 };
 
+/** Голова 32 (`rounded-sm`, 6) в 4 px от края: скругление кнопки 6 + 4 = 10, углы идут параллельно. */
 function SwitcherButton({
 	contentKey,
 	avatar,
@@ -86,7 +88,7 @@ function SwitcherButton({
 			type="button"
 			{...{ [ACCOUNT_SWITCHER_ATTR]: "" }}
 			className={cn(
-				"relative flex h-10 items-center gap-2.5 overflow-clip rounded-full pr-2.5 pl-1 text-left transition-[background-color,scale] duration-(--duration-fast) ease-out hover:bg-sidebar-accent active:scale-[0.98] aria-expanded:bg-sidebar-accent",
+				"relative flex h-10 items-center gap-2.5 overflow-clip rounded-[10px] pr-2.5 pl-1 text-left transition-[background-color,scale] duration-(--duration-fast) ease-out hover:bg-sidebar-accent active:scale-[0.98] aria-expanded:bg-sidebar-accent",
 				className,
 			)}
 			{...props}
@@ -102,7 +104,8 @@ function SwitcherButton({
 					{avatar}
 					<span
 						className={cn(
-							"max-w-28 truncate text-sm/5 font-semibold whitespace-nowrap text-foreground @max-[940px]/titlebar:max-w-20",
+							"max-w-28 truncate text-sm/5 font-semibold whitespace-nowrap text-foreground",
+							titlebarClasses.nick,
 							titleClassName,
 						)}
 					>
@@ -119,7 +122,7 @@ function EmptyAvatar() {
 	return (
 		<span
 			aria-hidden
-			className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-foreground/10 text-muted-foreground"
+			className="flex size-8 shrink-0 items-center justify-center rounded-sm bg-foreground/10 text-muted-foreground"
 		>
 			<User />
 		</span>
@@ -134,7 +137,7 @@ function AddAccountButton() {
 			contentKey="none"
 			avatar={<EmptyAvatar />}
 			title={label}
-			titleClassName="max-w-none text-primary-text @max-[940px]/titlebar:max-w-24"
+			titleClassName={cn("max-w-none text-primary-text", titlebarClasses.addAccount)}
 			chevron={false}
 			onClick={(e) => openAddAccountDialog(e.currentTarget)}
 		/>

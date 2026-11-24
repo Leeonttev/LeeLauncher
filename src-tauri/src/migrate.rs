@@ -5,7 +5,11 @@
 //! Новая папка без единого файла убирается, с файлами — конфликт, работаем со старой.
 //!
 //! Вызывать до плагинов (плагин логов сразу создаёт `logs`). Логгера ещё нет, итог копится в [`Outcome`].
+//!
+//! Только Windows: на других ОС saLauncher не выходил, там сразу берутся новые папки.
+#![cfg_attr(not(windows), allow(dead_code))]
 
+#[cfg(windows)]
 use std::convert::Infallible;
 use std::fs;
 use std::io;
@@ -117,7 +121,28 @@ impl Outcome {
 	}
 }
 
+/// На других ОС переносить нечего.
+#[cfg(not(windows))]
+pub fn run(plan: &Plan) -> Outcome {
+	let state = if present(&plan.data.new) {
+		FolderState::Ready
+	} else {
+		FolderState::Fresh
+	};
+	Outcome {
+		data: state,
+		webview: state,
+		data_dir: plan.data.new.clone(),
+		webview_dir: plan.webview.new.clone(),
+		rewritten: 0,
+		rewrite_failed: Vec::new(),
+		conflicts: Vec::new(),
+		notes: Vec::new(),
+	}
+}
+
 /// Выполняет или продолжает перенос. Не падает: при любой ошибке отвечает, с какой папкой работать.
+#[cfg(windows)]
 pub fn run(plan: &Plan) -> Outcome {
 	match run_with::<Infallible>(plan, &mut |_| Ok(())) {
 		Ok(outcome) => outcome,
@@ -538,7 +563,24 @@ fn is_root_end(next: Option<char>) -> bool {
 	matches!(next, None | Some('\\' | '/' | '"' | '\'' | ';'))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
+mod unix_tests {
+	use super::*;
+
+	#[test]
+	fn nothing_to_move() {
+		let tmp = tempfile::tempdir().unwrap();
+		std::fs::create_dir_all(tmp.path().join(OLD_DIR_NAME)).unwrap();
+		let plan = Plan::under(tmp.path(), tmp.path());
+		let outcome = run(&plan);
+		assert_eq!(outcome.data, FolderState::Fresh);
+		assert_eq!(outcome.data_dir, tmp.path().join(NEW_DIR_NAME));
+		assert!(!outcome.unfinished());
+		assert!(tmp.path().join(OLD_DIR_NAME).exists());
+	}
+}
+
+#[cfg(all(test, windows))]
 mod tests {
 	use std::collections::{BTreeMap, BTreeSet};
 

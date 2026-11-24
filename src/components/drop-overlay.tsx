@@ -53,6 +53,21 @@ function isSkinDrop(paths: string[]) {
 	return paths.some((path) => path.toLowerCase().endsWith(".png")) || !paths.some(isModpackFile);
 }
 
+type Area = { left: number; top: number; width: number; height: number };
+
+/** На «Скинах» слой лежит только над библиотекой, подиум остаётся виден. */
+function skinDropArea(): Area | undefined {
+	const zone = document.querySelector<HTMLElement>("[data-skins-drop-zone]");
+	if (!zone) return undefined;
+	const rect = zone.getBoundingClientRect();
+	return {
+		left: Math.round(rect.left),
+		top: Math.round(rect.top),
+		width: Math.round(rect.width),
+		height: Math.round(rect.height),
+	};
+}
+
 /** Без сборок `.zip` тоже пробуем как модпак: ресурспаку или датапаку всё равно некуда деться. */
 function findModpack(paths: string[]): string | null {
 	return (
@@ -87,6 +102,7 @@ export function DropOverlay() {
 		manual: boolean;
 		skin: boolean;
 		skinWrong?: boolean;
+		area?: Area;
 	} | null>(null);
 	const [step, setStep] = useState<Step | null>(null);
 	const [open, setOpen] = useState(false);
@@ -151,6 +167,7 @@ export function DropOverlay() {
 								manual: false,
 								skin: true,
 								skinWrong: !event.paths.some((path) => path.toLowerCase().endsWith(".png")),
+								area: skinDropArea(),
 							});
 						return;
 					}
@@ -225,13 +242,16 @@ export function DropOverlay() {
 						exit={{ opacity: 0 }}
 						transition={{ duration: reduceMotion ? 0 : 0.12 }}
 						className={cn(
-							"pointer-events-none fixed inset-x-0 top-14 bottom-0 bg-background/88",
+							"pointer-events-none fixed bg-background/88",
+							!dragging.area && "inset-x-0 top-14 bottom-0",
+							dragging.area && "rounded-2xl",
 							dragging.manual ? "z-[60]" : "z-40",
 						)}
+						style={dragging.area}
 					>
 						<div
 							className={cn(
-								"absolute top-[round(down,50%,1px)] left-[round(down,50%,1px)] flex w-130 translate-x-[round(down,-50%,1px)] translate-y-[round(down,-50%,1px)] flex-col items-center rounded-2xl border bg-background px-8 py-9 text-center",
+								"absolute top-[round(down,50%,1px)] left-[round(down,50%,1px)] flex w-130 max-w-[calc(100%-32px)] translate-x-[round(down,-50%,1px)] translate-y-[round(down,-50%,1px)] flex-col items-center rounded-2xl border bg-background px-8 py-9 text-center",
 								dragging.skinWrong ? "border-destructive" : "border-primary",
 							)}
 						>

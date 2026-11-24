@@ -76,7 +76,7 @@ async fn real_skin_change() {
 			println!("копия скина: {}", path.display());
 			let entry = skins
 				.library
-				.add_bytes(&png, &nick, Some(&skin.key))
+				.add_bytes(&png, &nick, Some(&skin.key), id)
 				.unwrap();
 			Some((entry.id, skin.model))
 		}
@@ -101,14 +101,14 @@ async fn real_skin_change() {
 	let mut limited = None;
 	for (label, png, model) in uploads {
 		wait_for(10).await;
-		let entry = skins.library.add_bytes(png, label, None).unwrap();
+		let entry = skins.library.add_bytes(png, label, None, id).unwrap();
 		let request = ApplyRequest {
 			skin_id: Some(entry.id),
 			model: Some(model),
 			cape: None,
 			allow_lose_previous: false,
 		};
-		let result = skins.apply(id, microsoft, &nick, request, token).await;
+		let result = skins.apply(id, microsoft, request, token).await;
 		match result {
 			Ok(outcome) => {
 				let worn = outcome.value.profile.skin;
@@ -164,7 +164,7 @@ async fn real_skin_change() {
 			cape: Some(other),
 			..Default::default()
 		};
-		let result = skins.apply(id, microsoft, &nick, request, token).await;
+		let result = skins.apply(id, microsoft, request, token).await;
 		println!(
 			"плащ: {:?}",
 			result.as_ref().map(|o| &o.value.profile.active_cape_id)
@@ -194,7 +194,7 @@ async fn real_skin_change() {
 					allow_lose_previous: false,
 				};
 				skins
-					.apply(id, microsoft, &nick, request, token)
+					.apply(id, microsoft, request, token)
 					.await
 					.map(|outcome| outcome.value.cape_error)
 			}

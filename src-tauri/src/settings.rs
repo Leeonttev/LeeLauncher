@@ -59,6 +59,9 @@ pub struct Settings {
 	/// Аргументы JVM против Java4Shell для Java 17+.
 	#[serde(default = "yes")]
 	pub java4shell_mitigation: bool,
+	/// Пока в версии уязвимый FreeType: перед запуском снимать у серверов «принимать ресурспак автоматически».
+	#[serde(default = "yes")]
+	pub protect_server_packs: bool,
 }
 
 fn yes() -> bool {
@@ -75,6 +78,7 @@ impl Default for Settings {
 			discord_presence: true,
 			discord_show_instance: true,
 			java4shell_mitigation: true,
+			protect_server_packs: true,
 		}
 	}
 }
@@ -104,6 +108,8 @@ pub struct SettingsPatch {
 	pub discord_show_instance: Option<bool>,
 	#[serde(default)]
 	pub java4shell_mitigation: Option<bool>,
+	#[serde(default)]
+	pub protect_server_packs: Option<bool>,
 }
 
 pub struct SettingsStore {
@@ -176,6 +182,9 @@ impl SettingsStore {
 		if let Some(on) = patch.java4shell_mitigation {
 			next.java4shell_mitigation = on;
 		}
+		if let Some(on) = patch.protect_server_packs {
+			next.protect_server_packs = on;
+		}
 		let json =
 			serde_json::to_vec_pretty(&next).map_err(|e| AppError::storage(e.to_string()))?;
 		fs_util::write_atomic(&self.path, &json)
@@ -229,6 +238,7 @@ mod tests {
 		let old: Settings = serde_json::from_str(r#"{ "version": 1 }"#).unwrap();
 		assert!(old.discord_presence && old.discord_show_instance);
 		assert!(old.java4shell_mitigation);
+		assert!(old.protect_server_packs);
 
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("settings.json");
@@ -240,7 +250,17 @@ mod tests {
 		let next = store.update(patch).unwrap();
 		assert!(next.discord_presence);
 		assert!(!next.discord_show_instance);
-		assert!(!SettingsStore::load(path).get().discord_show_instance);
+		assert!(
+			!SettingsStore::load(path.clone())
+				.get()
+				.discord_show_instance
+		);
+		let patch: SettingsPatch = serde_json::from_value(serde_json::json!({
+			"protectServerPacks": false
+		}))
+		.unwrap();
+		assert!(!store.update(patch).unwrap().protect_server_packs);
+		assert!(!SettingsStore::load(path).get().protect_server_packs);
 	}
 
 	#[test]

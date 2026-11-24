@@ -3,7 +3,11 @@ import math
 from PIL import ImageFont
 base = 'node_modules/@fontsource-variable/onest/files/'
 import sys
-WORDMARK, COMPACT = (int(x) for x in sys.argv[1:3]) if len(sys.argv) > 2 else (1080, 940)
+# --mac: слева место под системные кнопки окна (92 вместо 20), справа своих кнопок окна и линии нет, отступ 12.
+MAC = '--mac' in sys.argv
+args = [a for a in sys.argv[1:] if a != '--mac']
+WORDMARK, COMPACT = (int(x) for x in args[:2]) if len(args) > 1 else ((1016, 876) if MAC else (1080, 940))
+LEFT = 92 if MAC else 20
 
 def onest(text, size, weight, cyr):
     f = ImageFont.truetype(base + ('onest-cyrillic-wght-normal.woff2' if cyr else 'onest-latin-wght-normal.woff2'), size)
@@ -22,12 +26,12 @@ for lang, labels, add, cyr in (("ru", ["Главная", "Сборки", "Кат
     for width in sorted({WORDMARK, WORDMARK - 1, COMPACT, COMPACT - 1, 960}, reverse=True):
         wordmark, compact = width >= WORDMARK, width < COMPACT
         # Отступ 20 + лок-ап высотой 22 + запас 15; уже порога — отступ и искра 22.
-        brand = math.ceil(20 + 22 * 747.42 / 116.5 + 15) if wordmark else 20 + 21
+        brand = math.ceil(LEFT + 22 * 747.42 / 116.5 + 15) if wordmark else LEFT + 21
         tabs = sum(tab(l, 'play' if i == 1 else None, compact, cyr) for i, l in enumerate(labels)) + 3 * 2
         nav = 8 + 6 + tabs + 6
         # Таблетка аккаунта: 4 + голова 32 + 10 + ник + 10 + шеврон 16 + 10; справа «Загрузки» и «Настройки» по 36.
         acct = 4 + 32 + 10 + (80 if compact else 112) + 10 + 16 + 10
         add_btn = 4 + 28 + 10 + min(onest(add, 14, 600, cyr), 96 if compact else 999) + 10
-        right = max(acct, add_btn) + 4 + 36 + 4 + 36 + 8
-        total = brand + nav + 0 + right + 5 + 138
+        right = max(acct, add_btn) + 4 + 36 + 4 + 36 + (12 if MAC else 8)
+        total = brand + nav + right + (0 if MAC else 5 + 138)
         print(f"{lang} {width}: brand {brand} tabs {round(tabs)} account {round(max(acct, add_btn))} total {round(total)} spare {round(width - total)}")

@@ -1,5 +1,6 @@
 //! Java: поиск установленных, проверка версии и разрядности, выбор под версию игры, скачивание.
 
+mod exe;
 pub mod runtime;
 
 use std::collections::HashSet;
@@ -76,9 +77,18 @@ fn version_key(version: &str) -> Vec<u64> {
 		.collect()
 }
 
-/// Подходящая Java для игры: та же мажорная версия; лучше родная разрядность ОС, скачанная лаунчером и новее.
-pub fn pick(installs: &[JavaInstall], major: u32, os_arch: &str) -> Option<JavaInstall> {
-	let mut list: Vec<&JavaInstall> = installs.iter().filter(|j| j.major == major).collect();
+/// Подходящая Java для игры: та же мажорная версия и нужная разрядность (`required`); лучше родная
+/// разрядность ОС, скачанная лаунчером и новее.
+pub fn pick(
+	installs: &[JavaInstall],
+	major: u32,
+	os_arch: &str,
+	required: Option<&str>,
+) -> Option<JavaInstall> {
+	let mut list: Vec<&JavaInstall> = installs
+		.iter()
+		.filter(|j| j.major == major && required.is_none_or(|a| j.arch == a))
+		.collect();
 	list.sort_by(|a, b| {
 		(b.arch == os_arch)
 			.cmp(&(a.arch == os_arch))
@@ -97,7 +107,14 @@ struct Probe {
 }
 
 /// Файл `release` в папке Java: `JAVA_VERSION="17.0.15"`, `OS_ARCH="amd64"`, `IMPLEMENTOR="..."`.
-fn parse_release(text: &str) -> Option<Probe> {
+/// `OS_ARCH` бывает не у всех: у рантаймов Mojang (gamma, delta, epsilon) его нет.
+struct Release {
+	version: String,
+	arch: Option<String>,
+	vendor: Option<String>,
+}
+
+fn parse_release(text: &str) -> Option<Release> {
 	let mut version = None;
 	let mut arch = None;
 	let mut vendor = None;
@@ -107,17 +124,16 @@ fn parse_release(text: &str) -> Option<Probe> {
 		};
 		let value = value.trim().trim_matches('"').to_owned();
 		match key.trim() {
-			"JAVA_VERSION" => version = Some(value),
-			"OS_ARCH" => arch = Some(value),
+			"JAVA_VERSION" if !value.is_empty() => version = Some(value),
+			"OS_ARCH" if !value.is_empty() => arch = Some(normalize_arch(&value).to_owned()),
 			"IMPLEMENTOR" => vendor = Some(value),
 			_ => {}
 		}
 	}
-	Some(Probe {
+	Some(Release {
 		version: version?,
-		arch: normalize_arch(&arch?).to_owned(),
+		arch,
 		vendor,
-		home: None,
 	})
 }
 
@@ -159,35 +175,101 @@ fn simplify(path: PathBuf) -> PathBuf {
 	path
 }
 
-/// Папка `bin` по пути, который дал пользователь или нашёл поиск: файл java, папка `bin` или папка Java.
+/// Папка `bin` по пути, который дал пользователь или нашёл поиск: файл java, папка `bin`, папка Java
+/// или пакет macOS (`*.jdk/Contents/Home`, `jre.bundle/Contents/Home` у рантайма Mojang).
 fn bin_dir(path: &Path) -> Option<PathBuf> {
 	if path.is_file() {
+		let name = path.file_name()?.to_string_lossy();
+		if name != JAVA_BIN
+			&& name != JAVA_CONSOLE_BIN
+			&& let Some(bundle) = bundle_of(path)
+		{
+			return bin_dir(&bundle);
+		}
 		return path.parent().map(Path::to_path_buf);
 	}
-	if path.join("bin").join(JAVA_BIN).is_file() {
-		return Some(path.join("bin"));
+	let homes = [
+		path.to_path_buf(),
+		path.join("Contents").join("Home"),
+		path.join("jre.bundle").join("Contents").join("Home"),
+	];
+	if let Some(home) = homes
+		.iter()
+		.find(|h| h.join("bin").join(JAVA_BIN).is_file())
+	{
+		return Some(home.join("bin"));
 	}
 	if path.join(JAVA_BIN).is_file() {
 		return Some(path.to_path_buf());
 	}
-	None
+	bundle_of(path).and_then(|bundle| bin_dir(&bundle))
+}
+
+/// Пакет macOS (`*.jdk`, `*.jre`, `*.bundle`), внутри которого лежит путь.
+fn bundle_of(path: &Path) -> Option<PathBuf> {
+	path.ancestors()
+		.skip(1)
+		.find(|p| {
+			p.extension()
+				.is_some_and(|e| matches!(e.to_string_lossy().as_ref(), "jdk" | "jre" | "bundle"))
+		})
+		.map(Path::to_path_buf)
 }
 
 /// Заголовок системного окна выбора Java (`java_pick_file`).
 pub fn pick_title(lang: crate::lang::Lang) -> &'static str {
-	match lang {
-		crate::lang::Lang::Ru => "Выберите java.exe или javaw.exe",
-		crate::lang::Lang::En => "Select java.exe or javaw.exe",
+	match (lang, cfg!(windows)) {
+		(crate::lang::Lang::Ru, true) => "Выберите java.exe или javaw.exe",
+		(crate::lang::Lang::En, true) => "Select java.exe or javaw.exe",
+		(crate::lang::Lang::Ru, false) => "Выберите Java",
+		(crate::lang::Lang::En, false) => "Select Java",
 	}
 }
 
 /// С какой папки открывать окно выбора Java: обычное место установки, если оно есть.
 pub fn pick_start_dir() -> Option<PathBuf> {
+	if cfg!(target_os = "macos") {
+		let dir = PathBuf::from(MAC_JVM_DIR);
+		return dir.is_dir().then_some(dir);
+	}
 	let program_files = std::env::var_os("ProgramFiles")?;
 	["Java", "Eclipse Adoptium", "Zulu", "Microsoft"]
 		.iter()
 		.map(|name| PathBuf::from(&program_files).join(name))
 		.find(|dir| dir.is_dir())
+}
+
+const MAC_JVM_DIR: &str = "/Library/Java/JavaVirtualMachines";
+
+/// Папка игры официального лаунчера: на macOS `~/Library/Application Support/minecraft`,
+/// на Linux `~/.minecraft`, на Windows `%APPDATA%\.minecraft`.
+pub fn official_minecraft_dir() -> Option<PathBuf> {
+	if cfg!(target_os = "macos") {
+		dirs::data_dir().map(|d| d.join("minecraft"))
+	} else if cfg!(windows) {
+		dirs::data_dir().map(|d| d.join(".minecraft"))
+	} else {
+		dirs::home_dir().map(|d| d.join(".minecraft"))
+	}
+}
+
+/// `/usr/bin/java` на macOS — заглушка: без JDK она показывает системное окно «установите Java».
+fn is_apple_stub(bin: &Path) -> bool {
+	cfg!(target_os = "macos") && bin == Path::new("/usr/bin")
+}
+
+/// x64-Java на Mac с Apple Silicon работает только через Rosetta; её нет — `java_invalid` с
+/// `details: "rosetta"`.
+pub fn ensure_runnable_arch(arch: &str) -> Result<(), AppError> {
+	if cfg!(target_os = "macos")
+		&& arch == "x64"
+		&& crate::meta::rules::Platform::current().arch == "arm64"
+		&& !Path::new("/Library/Apple/usr/share/rosetta/rosetta").exists()
+	{
+		log::warn!("x64-Java без Rosetta не запустится");
+		return Err(AppError::coded(ErrorCode::JavaInvalid, "rosetta"));
+	}
+	Ok(())
 }
 
 /// Проверяет Java по пути. Для заглушек вроде Oracle `javapath` отдаёт настоящую Java из `java.home`.
@@ -213,6 +295,9 @@ fn check_at(path: &Path, managed_root: &Path) -> Result<(JavaInstall, Option<Pat
 		|why: &str| AppError::coded(ErrorCode::JavaInvalid, format!("{}: {why}", path.display()));
 	let bin = bin_dir(path).ok_or_else(|| invalid("нет java"))?;
 	let bin = simplify(std::fs::canonicalize(&bin).map_err(|e| invalid(&e.to_string()))?);
+	if is_apple_stub(&bin) {
+		return Err(invalid("заглушка macOS, выберите JDK"));
+	}
 	let exe = bin.join(JAVA_BIN);
 	if !exe.is_file() {
 		return Err(invalid("нет java"));
@@ -221,11 +306,29 @@ fn check_at(path: &Path, managed_root: &Path) -> Result<(JavaInstall, Option<Pat
 		.parent()
 		.map(Path::to_path_buf)
 		.unwrap_or_else(|| bin.clone());
-	let probe = std::fs::read_to_string(home.join("release"))
+	let release = std::fs::read_to_string(home.join("release"))
 		.ok()
-		.and_then(|t| parse_release(&t))
-		.or_else(|| run_probe(&bin.join(JAVA_CONSOLE_BIN)))
-		.ok_or_else(|| invalid("не удалось узнать версию"))?;
+		.and_then(|t| parse_release(&t));
+	let probe = match release {
+		Some(release) => {
+			// Без `OS_ARCH`: отметка нашей Java → заголовок файла → запуск. Обычно JVM не запускается.
+			let arch = release
+				.arch
+				.or_else(|| managed_arch(&exe, managed_root))
+				.or_else(|| exe::arch_of(&exe).map(str::to_owned));
+			match arch {
+				Some(arch) => Some(Probe {
+					version: release.version,
+					arch,
+					vendor: release.vendor,
+					home: None,
+				}),
+				None => run_probe(&bin.join(JAVA_CONSOLE_BIN)),
+			}
+		}
+		None => run_probe(&bin.join(JAVA_CONSOLE_BIN)),
+	}
+	.ok_or_else(|| invalid("не удалось узнать версию"))?;
 	let major = parse_major(&probe.version).ok_or_else(|| invalid("неизвестная версия"))?;
 	let managed_root = std::fs::canonicalize(managed_root).map(simplify).ok();
 	let java_home = probe.home.map(PathBuf::from);
@@ -243,7 +346,20 @@ fn check_at(path: &Path, managed_root: &Path) -> Result<(JavaInstall, Option<Pat
 	))
 }
 
+/// Разрядность из отметки скачанной нами Java; отметка без `arch` — родная для ОС.
+fn managed_arch(exe: &Path, managed_root: &Path) -> Option<String> {
+	let home = runtime::home_of(&exe.to_string_lossy(), managed_root)?;
+	runtime::marker(&home).map(|m| m.arch().to_owned())
+}
+
+#[cfg(test)]
+thread_local! {
+	static PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn run_probe(java: &Path) -> Option<Probe> {
+	#[cfg(test)]
+	PROBES.with(|n| n.set(n.get() + 1));
 	let mut cmd = std::process::Command::new(java);
 	cmd.args(["-XshowSettings:properties", "-version"])
 		.env_remove("_JAVA_OPTIONS")
@@ -254,7 +370,8 @@ fn run_probe(java: &Path) -> Option<Probe> {
 }
 
 /// Сколько ждём `java -version`: зависшая «java» (не та программа) не должна держать поиск.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Первый запуск свежей Java на Windows с Defender (проверка каждой DLL) бывает долгим.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Больше этого из stderr не храним (остальное читается и выбрасывается, чтобы процесс не встал).
 const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 
@@ -326,10 +443,13 @@ pub async fn check(path: PathBuf, managed_root: PathBuf) -> Result<JavaInstall, 
 }
 
 /// Java без скачивания: своя у сборки (как есть) → из настроек → лучшая из найденных.
+/// `arch` — разрядность, без которой игра не запустится (natives только x64), её требуют
+/// настройки и найденные; своя Java сборки берётся как есть.
 pub async fn select(
 	own: Option<&str>,
 	configured: Option<&str>,
 	major: u32,
+	arch: Option<&str>,
 	managed_root: &Path,
 	cache: &JavaCache,
 ) -> Result<Option<JavaInstall>, AppError> {
@@ -342,11 +462,25 @@ pub async fn select(
 				found.major
 			);
 		}
+		if arch.is_some_and(|a| a != found.arch) {
+			log::warn!(
+				"своя Java сборки {} для {}, игре нужна {arch:?}",
+				found.path,
+				found.arch
+			);
+		}
 		return Ok(Some(found));
 	}
 	if let Some(path) = configured {
 		match check(PathBuf::from(path), managed_root.to_path_buf()).await {
-			Ok(found) if found.major == major => return Ok(Some(found)),
+			Ok(found) if found.major == major && arch.is_none_or(|a| a == found.arch) => {
+				return Ok(Some(found));
+			}
+			Ok(found) if found.major == major => log::warn!(
+				"Java из настроек для {major} — {}, игре нужна {arch:?}: {}",
+				found.arch,
+				found.path
+			),
 			Ok(found) => log::warn!(
 				"Java из настроек для {major} оказалась {}: {}",
 				found.major,
@@ -355,16 +489,16 @@ pub async fn select(
 			Err(err) => log::warn!("Java из настроек для {major} не работает: {err}"),
 		}
 	}
-	let arch = crate::meta::rules::Platform::current().arch;
+	let host = crate::meta::rules::Platform::current().arch;
 	let cached = cache.get(managed_root).await;
-	if let Some(found) = pick(&cached, major, arch)
+	if let Some(found) = pick(&cached, major, host, arch)
 		&& Path::new(&found.path).is_file()
 	{
 		return Ok(Some(found));
 	}
 	// Подходящей нет или её удалили: список мог устареть, ищем заново.
 	let fresh = cache.refresh(managed_root).await;
-	Ok(pick(&fresh, major, arch))
+	Ok(pick(&fresh, major, host, arch))
 }
 
 /// Кэш найденных Java: поиск запускает каждую, это небыстро.
@@ -442,7 +576,10 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 fn candidates(managed_root: &Path) -> Vec<PathBuf> {
 	let mut out: Vec<PathBuf> = Vec::new();
 	if let Some(path) = std::env::var_os("PATH") {
-		out.extend(std::env::split_paths(&path).filter(|p| p.join(JAVA_BIN).is_file()));
+		out.extend(
+			std::env::split_paths(&path)
+				.filter(|p| !is_apple_stub(p) && p.join(JAVA_BIN).is_file()),
+		);
 	}
 	if let Some(home) = std::env::var_os("JAVA_HOME") {
 		out.push(PathBuf::from(home));
@@ -456,8 +593,8 @@ fn candidates(managed_root: &Path) -> Vec<PathBuf> {
 		out.extend(subdirs(&home.join(".jdks")));
 	}
 	// Java официального лаунчера: runtime/<компонент>/<платформа>/<компонент>.
-	if let Some(appdata) = dirs::data_dir() {
-		for component in subdirs(&appdata.join(".minecraft").join("runtime")) {
+	if let Some(game) = official_minecraft_dir() {
+		for component in subdirs(&game.join("runtime")) {
 			for platform in subdirs(&component) {
 				out.extend(subdirs(&platform));
 			}
@@ -550,10 +687,23 @@ fn platform_candidates() -> Vec<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn platform_candidates() -> Vec<PathBuf> {
-	subdirs(Path::new("/Library/Java/JavaVirtualMachines"))
-		.into_iter()
-		.map(|p| p.join("Contents").join("Home"))
-		.collect()
+	let mut out = subdirs(Path::new(MAC_JVM_DIR));
+	if let Some(home) = dirs::home_dir() {
+		out.extend(subdirs(&home.join("Library/Java/JavaVirtualMachines")));
+		out.extend(subdirs(&home.join(".sdkman/candidates/java")));
+	}
+	for brew in ["/opt/homebrew/opt", "/usr/local/opt"] {
+		out.extend(
+			subdirs(Path::new(brew))
+				.into_iter()
+				.filter(|p| {
+					p.file_name()
+						.is_some_and(|n| n.to_string_lossy().starts_with("openjdk"))
+				})
+				.map(|p| p.join("libexec/openjdk.jdk")),
+		);
+	}
+	out
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -606,9 +756,120 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(probe.version, "17.0.15");
-		assert_eq!(probe.arch, "x64");
+		assert_eq!(probe.arch.as_deref(), Some("x64"));
 		assert_eq!(probe.vendor.as_deref(), Some("Microsoft"));
-		assert!(parse_release("JAVA_VERSION=\"8\"").is_none());
+		// Рантаймы Mojang (gamma, delta, epsilon): только версия и модули, без `OS_ARCH`.
+		let mojang = parse_release(
+			"JAVA_VERSION=\"25.0.1\"\nMODULES=\"java.base java.compiler jdk.zipfs\"\n",
+		)
+		.unwrap();
+		assert_eq!(mojang.version, "25.0.1");
+		assert_eq!(mojang.arch, None);
+		let short = parse_release("JAVA_VERSION=\"25\"").unwrap();
+		assert_eq!(parse_major(&short.version), Some(25));
+		assert!(parse_release("OS_ARCH=\"amd64\"").is_none());
+		assert!(parse_release("JAVA_VERSION=\"\"").is_none());
+	}
+
+	fn probes() -> usize {
+		PROBES.with(|n| n.get())
+	}
+
+	/// Java без `OS_ARCH` в `release`: `<root>/<name>/bin/<java>` с заданным содержимым файла.
+	fn bare_java(root: &Path, name: &str, version: &str, exe: &[u8]) -> PathBuf {
+		let home = root.join(name);
+		std::fs::create_dir_all(home.join("bin")).unwrap();
+		std::fs::write(home.join("bin").join(JAVA_BIN), exe).unwrap();
+		std::fs::write(
+			home.join("release"),
+			format!("JAVA_VERSION=\"{version}\"\nMODULES=\"java.base\"\n"),
+		)
+		.unwrap();
+		home
+	}
+
+	#[test]
+	fn arch_from_marker_without_running_java() {
+		let dir = tempfile::tempdir().unwrap();
+		let root = dir.path().join("java");
+		let arm = exe::tests::macho_header(0x0100_000c);
+		let home = bare_java(&root, "java-runtime-epsilon", "25.0.1", &arm);
+		std::fs::write(
+			home.join(".leelauncher-runtime.json"),
+			r#"{"component":"java-runtime-epsilon","version":"25.0.1","arch":"x86"}"#,
+		)
+		.unwrap();
+		let before = probes();
+		let java = check_blocking(&home, &root).unwrap();
+		assert_eq!((java.major, java.arch.as_str()), (25, "x86"));
+		assert!(java.managed);
+		// Старая отметка без `arch` — родная разрядность.
+		std::fs::write(
+			home.join(".leelauncher-runtime.json"),
+			r#"{"component":"java-runtime-epsilon","version":"25.0.1"}"#,
+		)
+		.unwrap();
+		let java = check_blocking(&home, &root).unwrap();
+		assert_eq!(java.arch, crate::meta::rules::Platform::current().arch);
+		assert_eq!(probes(), before);
+	}
+
+	#[test]
+	fn arch_from_exe_header_without_running_java() {
+		let dir = tempfile::tempdir().unwrap();
+		let root = dir.path().join("managed");
+		let before = probes();
+		let cases = [
+			("pe-x64", exe::tests::pe_header(0x8664), "x64"),
+			("pe-arm64", exe::tests::pe_header(0xaa64), "arm64"),
+			("macho-x64", exe::tests::macho_header(0x0100_0007), "x64"),
+		];
+		for (name, header, arch) in cases {
+			let home = bare_java(dir.path(), name, "21.0.7", &header);
+			let java = check_blocking(&home, &root).unwrap();
+			assert_eq!((java.major, java.arch.as_str()), (21, arch), "{name}");
+			assert!(!java.managed);
+		}
+		assert_eq!(probes(), before);
+		// Ни отметки, ни понятного заголовка — запасной запуск (здесь не запустится).
+		let home = bare_java(dir.path(), "garbage", "21.0.7", b"not java");
+		let err = check_blocking(&home, &root).unwrap_err();
+		assert_eq!(err.code, ErrorCode::JavaInvalid);
+		let details = err.details.unwrap_or_default();
+		assert!(
+			details.contains("garbage") && details.contains("не удалось узнать версию"),
+			"{details}"
+		);
+		assert_eq!(probes(), before + 1);
+	}
+
+	/// Скачанная лаунчером Java (`LEELAUNCHER_JAVA_DIR`, папка `java` данных) проверяется без запуска.
+	#[test]
+	fn checks_downloaded_runtimes() {
+		let Some(root) = std::env::var_os("LEELAUNCHER_JAVA_DIR").map(PathBuf::from) else {
+			return;
+		};
+		let before = probes();
+		for dir in std::fs::read_dir(&root).unwrap().flatten() {
+			let dir = dir.path();
+			if !runtime::is_complete(&dir) {
+				continue;
+			}
+			let java = check_blocking(&dir, &root).unwrap();
+			let marker = runtime::marker(&dir).unwrap();
+			println!(
+				"{}: {} {} ({})",
+				dir.display(),
+				java.version,
+				java.arch,
+				marker.arch()
+			);
+			assert!(java.managed);
+			assert!(parse_major(&marker.version).is_some());
+			assert_eq!(java.arch, marker.arch());
+			assert_eq!(java.arch, exe::arch_of(Path::new(&java.path)).unwrap());
+		}
+		assert_eq!(probes(), before);
 	}
 
 	#[test]
@@ -654,12 +915,21 @@ mod tests {
 			java("21.0.7", "x64", false),
 			java("1.8.0_51", "x64", false),
 		];
-		assert_eq!(pick(&list, 17, "x64").unwrap().version, "17.0.8");
-		assert_eq!(pick(&list, 8, "x64").unwrap().version, "1.8.0_51");
-		assert_eq!(pick(&list, 21, "x64").unwrap().version, "21.0.7");
-		assert!(pick(&list, 16, "x64").is_none());
+		assert_eq!(pick(&list, 17, "x64", None).unwrap().version, "17.0.8");
+		assert_eq!(pick(&list, 8, "x64", None).unwrap().version, "1.8.0_51");
+		assert_eq!(pick(&list, 21, "x64", None).unwrap().version, "21.0.7");
+		assert!(pick(&list, 16, "x64", None).is_none());
+		// Нужна x86 — родная x64 не подходит.
+		assert_eq!(
+			pick(&list, 17, "x64", Some("x86")).unwrap().version,
+			"17.0.15"
+		);
+		assert!(pick(&list, 21, "x64", Some("arm64")).is_none());
 		let only_system = vec![java("17.0.2", "x64", false), java("17.0.15", "x64", false)];
-		assert_eq!(pick(&only_system, 17, "x64").unwrap().version, "17.0.15");
+		assert_eq!(
+			pick(&only_system, 17, "x64", None).unwrap().version,
+			"17.0.15"
+		);
 	}
 
 	#[test]
@@ -690,6 +960,33 @@ OS_ARCH=\"amd64\"
 		home
 	}
 
+	#[test]
+	fn finds_bin_in_mac_bundles() {
+		let dir = tempfile::tempdir().unwrap();
+		let jdk = dir.path().join("zulu-17.jdk");
+		let bin = jdk.join("Contents/Home/bin");
+		std::fs::create_dir_all(&bin).unwrap();
+		std::fs::write(bin.join(JAVA_BIN), b"").unwrap();
+		std::fs::write(jdk.join("Contents/Info.plist"), b"").unwrap();
+		assert_eq!(bin_dir(&jdk).as_deref(), Some(bin.as_path()));
+		assert_eq!(
+			bin_dir(&jdk.join("Contents/Info.plist")).as_deref(),
+			Some(bin.as_path())
+		);
+		assert_eq!(
+			bin_dir(&jdk.join("Contents")).as_deref(),
+			Some(bin.as_path())
+		);
+		assert_eq!(bin_dir(&bin.join(JAVA_BIN)).as_deref(), Some(bin.as_path()));
+
+		let runtime = dir.path().join("java-runtime-delta");
+		let bin = runtime.join("jre.bundle/Contents/Home/bin");
+		std::fs::create_dir_all(&bin).unwrap();
+		std::fs::write(bin.join(JAVA_BIN), b"").unwrap();
+		assert_eq!(bin_dir(&runtime).as_deref(), Some(bin.as_path()));
+		assert!(bin_dir(&dir.path().join("nothing")).is_none());
+	}
+
 	#[tokio::test]
 	async fn selects_java_in_order() {
 		let dir = tempfile::tempdir().unwrap();
@@ -701,32 +998,39 @@ OS_ARCH=\"amd64\"
 		let cache = JavaCache::default();
 
 		// Своя Java сборки — как есть, даже другой версии.
-		let found = select(Some(&own), Some(&configured), 99, &managed, &cache)
+		let found = select(Some(&own), Some(&configured), 99, None, &managed, &cache)
 			.await
 			.unwrap()
 			.unwrap();
 		assert_eq!(found.major, 17);
 		// Нерабочая своя — ошибка, а не тихая замена.
 		let broken = dir.path().join("nope").to_string_lossy().into_owned();
-		let err = select(Some(&broken), None, 17, &managed, &cache)
+		let err = select(Some(&broken), None, 17, None, &managed, &cache)
 			.await
 			.unwrap_err();
 		assert_eq!(err.code, ErrorCode::JavaInvalid);
 		// Из настроек — только той же версии.
-		let found = select(None, Some(&configured), 99, &managed, &cache)
+		let found = select(None, Some(&configured), 99, None, &managed, &cache)
 			.await
 			.unwrap()
 			.unwrap();
 		assert_eq!(found.version, "99.0.1");
+		// Нужна другая разрядность — Java из настроек не годится.
+		assert!(
+			select(None, Some(&configured), 99, Some("arm64"), &managed, &cache)
+				.await
+				.unwrap()
+				.is_none()
+		);
 		// Другой версии или нерабочая — пропускается; Java 98 на компьютере нет.
 		assert!(
-			select(None, Some(&configured), 98, &managed, &cache)
+			select(None, Some(&configured), 98, None, &managed, &cache)
 				.await
 				.unwrap()
 				.is_none()
 		);
 		assert!(
-			select(None, Some(&broken), 98, &managed, &cache)
+			select(None, Some(&broken), 98, None, &managed, &cache)
 				.await
 				.unwrap()
 				.is_none()

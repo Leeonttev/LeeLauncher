@@ -1,6 +1,7 @@
-# Выпуск версии: тег `vX.Y.Z` (совпадает с `version` в src-tauri/Cargo.toml) → сборка лаунчера,
-# свой установщик с лаунчером внутри, подпись minisign и черновик релиза с установщиком
-# и `latest.json`. Файл `.sig` в релиз не выкладывается: подпись уже лежит в `latest.json`.
+# Выпуск версии: тег `vX.Y.Z` (совпадает с `version` в src-tauri/Cargo.toml) → сборка для Windows
+# (свой установщик с лаунчером внутри) и macOS (универсальный .app в .dmg, без подписи Apple),
+# подпись minisign пакетов обновления и черновик релиза с `latest.json` на все платформы.
+# Подпись Windows лежит только в `latest.json`; `.sig` macOS выкладывается рядом с архивом.
 # Лаунчеры видят версию только после того, как черновик опубликуют вручную.
 name: Release
 
@@ -16,8 +17,8 @@ concurrency:
     cancel-in-progress: false
 
 jobs:
-    windows:
-        runs-on: windows-latest
+    prepare:
+        runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -31,8 +32,8 @@ jobs:
                   fi
 
             # Текст «Что нового» — раздел `## X.Y.Z` из CHANGELOG.md. notes.md идёт в `notes` файла
-            # latest.json (экран обновления), release-body.md — тело релиза: сверху ссылка на
-            # установщик, ниже тот же текст. Нет раздела — нет релиза.
+            # latest.json (экран обновления), release-body.md — тело релиза: сверху ссылки на
+            # установщики, ниже тот же текст. Нет раздела — нет релиза.
             - name: Что нового из CHANGELOG.md
               shell: bash
               run: |
@@ -46,9 +47,13 @@ jobs:
                     echo "::error::В CHANGELOG.md нет раздела «## $version» или он пустой"
                     exit 1
                   fi
+                  base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
                   setup="LeeLauncher-Setup-$version.exe"
+                  dmg="LeeLauncher-$version-macos.dmg"
                   {
-                    echo "### [⬇ Скачать $setup](https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$setup)"
+                    echo "### [⬇ Windows: $setup]($base/$setup)"
+                    echo
+                    echo "### [⬇ macOS: $dmg]($base/$dmg)"
                     echo
                     echo "или на сайте https://launcher.leeonttev.pro"
                     echo
@@ -56,6 +61,19 @@ jobs:
                     echo
                     cat notes.md
                   } > release-body.md
+
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: notes
+                  path: |
+                      notes.md
+                      release-body.md
+
+    windows:
+        needs: prepare
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
             - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
               with:
@@ -105,8 +123,8 @@ jobs:
                   mkdir -p out
                   cp installer/target/release/LeeLauncher-Setup.exe "out/LeeLauncher-Setup-${GITHUB_REF_NAME#v}.exe"
 
-            # Подпись minisign для автообновления (версия зашивается в подпись) и latest.json.
-            - name: Подпись и latest.json
+            # Подпись minisign для автообновления (версия зашивается в подпись).
+            - name: Подпись установщика
               shell: bash
               env:
                   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -115,8 +133,96 @@ jobs:
                   version="${GITHUB_REF_NAME#v}"
                   setup="out/LeeLauncher-Setup-$version.exe"
                   pnpm tauri signer sign --app-version "$version" "$setup"
-                  url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/LeeLauncher-Setup-$version.exe"
-                  node scripts/make-latest-json.mjs "$version" "$setup" notes.md "$url" out/latest.json
+
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: windows
+                  path: out/*
+                  if-no-files-found: error
+
+    macos:
+        needs: prepare
+        runs-on: macos-latest
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+            - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+              with:
+                  version: 12.11.2
+
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+              with:
+                  node-version: 24
+                  cache: pnpm
+
+            - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+              with:
+                  targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+            - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+              with:
+                  workspaces: ./src-tauri -> target
+
+            - run: pnpm install --frozen-lockfile
+
+            # Один универсальный .app для Apple Silicon и Intel. Подпись ad-hoc (`signingIdentity: "-"`),
+            # без Developer ID и нотаризации. `createUpdaterArtifacts` даёт архив `.app.tar.gz`
+            # для обновления, его подпись `tauri build` делает этим же ключом.
+            - name: Сборка лаунчера
+              env:
+                  LEELAUNCHER_CURSEFORGE_KEY: ${{ secrets.LEELAUNCHER_CURSEFORGE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+              run: pnpm tauri build --target universal-apple-darwin
+
+            # Подписываем ещё раз уже под именем релиза: версия зашивается в подпись явно.
+            - name: Пакеты и подпись
+              shell: bash
+              env:
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+              run: |
+                  version="${GITHUB_REF_NAME#v}"
+                  bundle=src-tauri/target/universal-apple-darwin/release/bundle
+                  mkdir -p out
+                  dmgs=("$bundle"/dmg/*.dmg)
+                  archives=("$bundle"/macos/*.app.tar.gz)
+                  if [ "${#dmgs[@]}" -ne 1 ] || [ "${#archives[@]}" -ne 1 ] || [ ! -f "${dmgs[0]}" ] || [ ! -f "${archives[0]}" ]; then
+                    echo "::error::Не нашлись .dmg и .app.tar.gz: ${dmgs[*]} ${archives[*]}"
+                    exit 1
+                  fi
+                  cp "${dmgs[0]}" "out/LeeLauncher-$version-macos.dmg"
+                  cp "${archives[0]}" "out/LeeLauncher-$version-macos.app.tar.gz"
+                  pnpm tauri signer sign --app-version "$version" "out/LeeLauncher-$version-macos.app.tar.gz"
+
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: macos
+                  path: out/*
+                  if-no-files-found: error
+
+    publish:
+        needs: [windows, macos]
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+              with:
+                  path: out
+                  merge-multiple: true
+
+            # Универсальный архив macOS один на обе архитектуры.
+            - name: latest.json
+              shell: bash
+              run: |
+                  version="${GITHUB_REF_NAME#v}"
+                  base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+                  setup="LeeLauncher-Setup-$version.exe"
+                  archive="LeeLauncher-$version-macos.app.tar.gz"
+                  node scripts/make-latest-json.mjs "$version" out/notes.md out/latest.json \
+                    "windows-x86_64-nsis,windows-x86_64" "out/$setup" "$base/$setup" \
+                    "darwin-aarch64-app,darwin-aarch64,darwin-x86_64-app,darwin-x86_64" "out/$archive" "$base/$archive"
 
             - name: Черновик релиза
               shell: bash
@@ -124,6 +230,10 @@ jobs:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   version="${GITHUB_REF_NAME#v}"
-                  setup="out/LeeLauncher-Setup-$version.exe"
                   gh release create "$GITHUB_REF_NAME" --draft --title "LeeLauncher $version" \
-                    --notes-file release-body.md "$setup" out/latest.json
+                    --notes-file out/release-body.md \
+                    "out/LeeLauncher-Setup-$version.exe" \
+                    "out/LeeLauncher-$version-macos.dmg" \
+                    "out/LeeLauncher-$version-macos.app.tar.gz" \
+                    "out/LeeLauncher-$version-macos.app.tar.gz.sig" \
+                    out/latest.json

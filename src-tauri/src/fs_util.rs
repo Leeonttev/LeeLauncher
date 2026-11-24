@@ -4,6 +4,15 @@ use std::path::{Path, PathBuf};
 
 /// Пишет во временный файл рядом и переименовывает поверх: при сбое старый файл остаётся целым.
 pub fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
+	write_atomic_mode(path, data, false)
+}
+
+/// [`write_atomic`] для файлов с секретами: на Unix права 0600 (читает только владелец).
+pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
+	write_atomic_mode(path, data, true)
+}
+
+fn write_atomic_mode(path: &Path, data: &[u8], private: bool) -> io::Result<()> {
 	if let Some(dir) = path.parent() {
 		fs::create_dir_all(dir)?;
 	}
@@ -11,13 +20,30 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
 	tmp.push(".tmp");
 	let tmp = PathBuf::from(tmp);
 	{
-		let mut f = fs::File::create(&tmp)?;
+		let mut f = create_file(&tmp, private)?;
 		f.write_all(data)?;
 		f.sync_all()?;
 	}
 	fs::rename(&tmp, path).inspect_err(|_| {
 		let _ = fs::remove_file(&tmp);
 	})
+}
+
+fn create_file(path: &Path, private: bool) -> io::Result<fs::File> {
+	let mut options = fs::OpenOptions::new();
+	options.write(true).create(true).truncate(true);
+	#[cfg(unix)]
+	if private {
+		use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+		options.mode(0o600);
+		let file = options.open(path)?;
+		// Файл мог остаться от прошлой попытки с другими правами: `mode` действует только при создании.
+		file.set_permissions(fs::Permissions::from_mode(0o600))?;
+		return Ok(file);
+	}
+	#[cfg(not(unix))]
+	let _ = private;
+	options.open(path)
 }
 
 /// Пишет копию файла в `<файл>.bak-<ГГГГММДД-ччммсс>` (UTC), не перезаписывая прошлые копии.
@@ -30,11 +56,12 @@ pub fn backup_copy(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
 		} else {
 			PathBuf::from(format!("{base}-{n}"))
 		};
-		match fs::OpenOptions::new()
-			.write(true)
-			.create_new(true)
-			.open(&candidate)
-		{
+		let mut options = fs::OpenOptions::new();
+		options.write(true).create_new(true);
+		// В копии бывают секреты (accounts.json): читает только владелец.
+		#[cfg(unix)]
+		std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+		match options.open(&candidate) {
 			Ok(mut f) => {
 				f.write_all(bytes)?;
 				f.sync_all()?;
@@ -65,10 +92,22 @@ pub fn read_json_or_backup<T: serde::de::DeserializeOwned>(path: &Path) -> io::R
 	}
 }
 
+/// `\` как разделитель: архивы, собранные на Windows, бывают с `overrides\config\x.toml`.
+pub fn slashes(rel: &str) -> std::borrow::Cow<'_, str> {
+	if rel.contains('\\') {
+		rel.replace('\\', "/").into()
+	} else {
+		rel.into()
+	}
+}
+
 /// Относительный путь из метаданных внутри `root`. `..`, абсолютные пути, диски и пустой путь — `None`.
+/// `\` — разделитель на любой ОС, `:` запрещён (на Windows это диск или поток NTFS).
 pub fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
-	let path = Path::new(rel);
+	let rel = slashes(rel);
+	let path = Path::new(rel.as_ref());
 	if rel.is_empty()
+		|| rel.contains(':')
 		|| path
 			.components()
 			.any(|c| !matches!(c, std::path::Component::Normal(_)))
@@ -118,6 +157,25 @@ pub fn is_safe_file_name(name: &str) -> bool {
 mod tests {
 	use super::*;
 
+	#[cfg(unix)]
+	#[test]
+	fn private_files_are_owner_only() {
+		use std::os::unix::fs::PermissionsExt;
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("accounts.json");
+		let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+		fs::write(path.with_extension("json.tmp"), b"old").unwrap();
+		fs::set_permissions(
+			path.with_extension("json.tmp"),
+			fs::Permissions::from_mode(0o644),
+		)
+		.unwrap();
+		write_private(&path, b"{}").unwrap();
+		assert_eq!(mode(&path), 0o600);
+		assert_eq!(fs::read(&path).unwrap(), b"{}");
+		assert_eq!(mode(&backup_copy(&path, b"{}").unwrap()), 0o600);
+	}
+
 	#[test]
 	fn safe_paths_and_ids() {
 		let root = Path::new("root");
@@ -128,10 +186,19 @@ mod tests {
 		for bad in ["", "../evil", "a/../../b", "/abs", "./a"] {
 			assert!(safe_join(root, bad).is_none(), "{bad}");
 		}
-		#[cfg(windows)]
-		for bad in [r"a\..\..\b", "C:/Windows/x", "C:x", r"\\server\share\x"] {
+		for bad in [
+			r"a\..\..\b",
+			"C:/Windows/x",
+			"C:x",
+			r"\\server\share\x",
+			r"\abs",
+		] {
 			assert!(safe_join(root, bad).is_none(), "{bad}");
 		}
+		assert_eq!(
+			safe_join(root, r"config\Мой мод\a.toml"),
+			Some(root.join("config/Мой мод/a.toml"))
+		);
 
 		for good in [
 			"1.20.1",

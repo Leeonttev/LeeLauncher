@@ -29,6 +29,7 @@ import {
 	useScreenshots,
 } from "@/lib/screenshots";
 import { cn } from "@/lib/utils";
+import { isDeleteKey, isPrimaryMod } from "@/lib/platform";
 
 export function ScreenshotsTab({ instance }: { instance: Instance }) {
 	const { t } = useTranslation();
@@ -56,10 +57,10 @@ export function ScreenshotsTab({ instance }: { instance: Instance }) {
 	useEffect(() => {
 		if (!viewer.open || !current || removing) return;
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.code === "KeyC" && event.ctrlKey && !event.shiftKey && !event.altKey) {
+			if (event.code === "KeyC" && isPrimaryMod(event)) {
 				event.preventDefault();
 				void copyScreenshot(instance.id, current.file);
-			} else if (event.key === "Delete") {
+			} else if (isDeleteKey(event)) {
 				event.preventDefault();
 				setRemoving(current);
 			}

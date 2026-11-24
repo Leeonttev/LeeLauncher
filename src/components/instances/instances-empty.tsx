@@ -7,6 +7,7 @@ import { InstanceCover } from "@/components/instances/instance-cover";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { openCreateInstanceDialog } from "@/lib/instances";
+import { ariaShortcut, shortcutLabel } from "@/lib/platform";
 
 /** Ящик стоит от внутреннего края рамки, без `translate`: координаты целые. */
 function EmptyArt() {
@@ -41,7 +42,7 @@ export function CreateInstanceButton({
 				<Button
 					variant={variant}
 					disabled={disabled}
-					aria-keyshortcuts="Control+N"
+					aria-keyshortcuts={ariaShortcut("N")}
 					className={className}
 					onClick={(e) => openCreateInstanceDialog(e.currentTarget)}
 				>
@@ -49,7 +50,7 @@ export function CreateInstanceButton({
 					{t("instances.create")}
 				</Button>
 			</TooltipTrigger>
-			<TooltipContent>{t("instances.createShortcut")}</TooltipContent>
+			<TooltipContent>{t("instances.createShortcut", { keys: shortcutLabel("N") })}</TooltipContent>
 		</Tooltip>
 	);
 }

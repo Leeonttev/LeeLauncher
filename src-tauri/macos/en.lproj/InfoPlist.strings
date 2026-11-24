@@ -1,0 +1,2 @@
+"NSDownloadsFolderUsageDescription" = "LeeLauncher looks in Downloads for mod files you downloaded from a website, so it can add them to your instance.";
+"NSDocumentsFolderUsageDescription" = "LeeLauncher reads Documents to import instances from other launchers and to open files you choose.";

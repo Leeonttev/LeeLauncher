@@ -182,6 +182,8 @@ export type Instance = {
 	modpack: ModpackLink | null;
 	/** Пока всегда `null`. */
 	importedFrom: { launcher: string; path: string } | null;
+	/** Версия игры с уязвимостью шрифтов (minecraft2shell). Старое ядро поле не присылает. */
+	fontVulnerable?: boolean;
 };
 
 /** Все поля необязательны; `null` сбрасывает `memory`, `javaPath`, `jvmArgs`, `resolution`. */
@@ -261,6 +263,8 @@ export type Settings = {
 	discordShowInstance: boolean;
 	/** Защита от Java4Shell для Java 17+. */
 	java4shellMitigation: boolean;
+	/** Перед запуском уязвимой версии снимать автопринятие серверных ресурспаков. */
+	protectServerPacks?: boolean;
 };
 
 export type SettingsPatch = {
@@ -271,6 +275,7 @@ export type SettingsPatch = {
 	discordPresence?: boolean;
 	discordShowInstance?: boolean;
 	java4shellMitigation?: boolean;
+	protectServerPacks?: boolean;
 };
 
 export type SystemMemory = {
@@ -497,6 +502,10 @@ export const appApi = {
 	/** «Выйти» в трее, пока идут игры; окно уже показано. */
 	onQuitRequested: (handler: (payload: { games: number }) => void): Promise<() => void> =>
 		subscribe("app-quit-requested", handler),
+	/** Ядро сняло автопринятие ресурспаков на `servers` серверах сборки `id` перед её запуском. */
+	onServerPacksGuarded: (
+		handler: (payload: { id: string; servers: number }) => void,
+	): Promise<() => void> => subscribe("server-packs-guarded", handler),
 };
 
 /* Discord */
@@ -1208,6 +1217,20 @@ export type SkinEntry = {
 	addedAt: string;
 	/** `data:image/png;base64,…` */
 	texture: string;
+	/** Нет поля — `upload`. `account` — лаунчер сам сохранил скин, который видел на аккаунте. */
+	origin?: SkinOrigin;
+	/** На каких аккаунтах скин был. */
+	seen?: SkinSeen[];
+};
+
+export type SkinOrigin = "upload" | "account";
+
+export type SkinSeen = {
+	accountId: string;
+	/** ISO 8601. */
+	firstSeenAt: string;
+	/** ISO 8601. */
+	lastSeenAt: string;
 };
 
 export type WornSkin = {
@@ -1281,8 +1304,6 @@ export const skinsApi = {
 	worn: (): Promise<Record<string, WornSkin>> => command("skins_worn"),
 	profile: (accountId: string, refresh = false): Promise<SkinProfile> =>
 		command("skin_profile", { accountId, refresh }),
-	/** Текущий скин — в библиотеку, из кэша, без сети. */
-	saveCurrent: (accountId: string): Promise<SkinEntry> => command("skin_save_current", { accountId }),
 	addFiles: (paths: string[]): Promise<SkinsAdded> => command("skin_add_files", { paths }),
 	/** Системное окно выбора PNG; `null` — закрыли. */
 	pickFiles: (lang: "ru" | "en"): Promise<SkinsAdded | null> => command("skin_pick_files", { lang }),

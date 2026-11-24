@@ -7,7 +7,10 @@ import { NavTabs, SettingsButton } from "@/components/layout/nav-tabs";
 import { WindowButton, WindowGlyph } from "@/components/layout/window-controls";
 import { Lockup, Spark } from "@/components/brand/identity";
 import { UpdateReminderButton } from "@/components/updates/update-reminder-button";
+import { titlebarClasses } from "@/components/layout/titlebar-layout";
 import { appWindow } from "@/lib/api";
+import { isMac } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 
 function useIsMaximized() {
 	const [maximized, setMaximized] = useState(false);
@@ -43,25 +46,22 @@ function Brand() {
 	return (
 		<div
 			data-tauri-drag-region
-			className="flex h-full w-[177px] shrink-0 items-center pl-5 text-foreground @max-[1080px]/titlebar:w-[41px]"
+			className={cn("flex h-full shrink-0 items-center text-foreground", titlebarClasses.brand)}
 		>
-			<span
-				data-tauri-drag-region
-				className="flex @max-[1080px]/titlebar:hidden [&>*]:pointer-events-none"
-			>
+			<span data-tauri-drag-region className={cn("[&>*]:pointer-events-none", titlebarClasses.lockup)}>
 				<Lockup size={22} />
 			</span>
-			<span
-				data-tauri-drag-region
-				className="hidden @max-[1080px]/titlebar:flex [&>*]:pointer-events-none"
-			>
+			<span data-tauri-drag-region className={cn("[&>*]:pointer-events-none", titlebarClasses.spark)}>
 				<Spark accent size={22} />
 			</span>
 		</div>
 	);
 }
 
-/** Пустые места таскают окно. Линия снизу лежит поверх, чтобы планка активной вкладки стояла на ней. */
+/**
+ * Пустые места таскают окно. Линия снизу лежит поверх, чтобы планка активной вкладки стояла на ней.
+ * На Mac кнопки окна системные (слева, поверх полосы), своих нет.
+ */
 export function Titlebar({
 	variant = "full",
 	brand = false,
@@ -69,9 +69,6 @@ export function Titlebar({
 	variant?: "full" | "minimal";
 	brand?: boolean;
 }) {
-	const { t } = useTranslation();
-	const maximized = useIsMaximized();
-
 	return (
 		<header
 			data-tauri-drag-region
@@ -90,13 +87,18 @@ export function Titlebar({
 						<Brand />
 						<NavTabs />
 						<div data-tauri-drag-region className="h-full flex-1" />
-						<div data-tauri-drag-region className="flex shrink-0 items-center gap-1 pr-2">
+						<div
+							data-tauri-drag-region
+							className={cn("flex shrink-0 items-center gap-1", isMac ? "pr-3" : "pr-2")}
+						>
 							<AccountSwitcher />
 							<UpdateReminderButton />
 							<DownloadsButton />
 							<SettingsButton />
 						</div>
-						<span data-tauri-drag-region aria-hidden className="mr-1 h-6 shrink-0 border-l" />
+						{!isMac && (
+							<span data-tauri-drag-region aria-hidden className="mr-1 h-6 shrink-0 border-l" />
+						)}
 					</motion.div>
 				)}
 			</AnimatePresence>
@@ -106,27 +108,35 @@ export function Titlebar({
 					<div data-tauri-drag-region className="h-full flex-1" />
 				</>
 			)}
-			<div className="flex h-full shrink-0">
-				<WindowButton
-					label={t("window.minimize")}
-					onClick={() => void appWindow.minimize().catch(() => {})}
-				>
-					<WindowGlyph name="minimize" />
-				</WindowButton>
-				<WindowButton
-					label={maximized ? t("window.restore") : t("window.maximize")}
-					onClick={() => void appWindow.toggleMaximize().catch(() => {})}
-				>
-					<WindowGlyph name={maximized ? "restore" : "maximize"} />
-				</WindowButton>
-				<WindowButton
-					label={t("window.close")}
-					danger
-					onClick={() => void appWindow.close().catch(() => {})}
-				>
-					<WindowGlyph name="close" />
-				</WindowButton>
-			</div>
+			{!isMac && <WindowControls />}
 		</header>
+	);
+}
+
+function WindowControls() {
+	const { t } = useTranslation();
+	const maximized = useIsMaximized();
+	return (
+		<div className="flex h-full shrink-0">
+			<WindowButton
+				label={t("window.minimize")}
+				onClick={() => void appWindow.minimize().catch(() => {})}
+			>
+				<WindowGlyph name="minimize" />
+			</WindowButton>
+			<WindowButton
+				label={maximized ? t("window.restore") : t("window.maximize")}
+				onClick={() => void appWindow.toggleMaximize().catch(() => {})}
+			>
+				<WindowGlyph name={maximized ? "restore" : "maximize"} />
+			</WindowButton>
+			<WindowButton
+				label={t("window.close")}
+				danger
+				onClick={() => void appWindow.close().catch(() => {})}
+			>
+				<WindowGlyph name="close" />
+			</WindowButton>
+		</div>
 	);
 }

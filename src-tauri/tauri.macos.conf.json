@@ -1,0 +1,40 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"app": {
+		"windows": [
+			{
+				"label": "main",
+				"title": "LeeLauncher",
+				"width": 1200,
+				"height": 760,
+				"minWidth": 960,
+				"minHeight": 600,
+				"center": true,
+				"decorations": true,
+				"titleBarStyle": "Overlay",
+				"hiddenTitle": true,
+				"trafficLightPosition": { "x": 20, "y": 30 },
+				"transparent": false,
+				"visible": false,
+				"backgroundColor": "#111113",
+				"resizable": true,
+				"create": false
+			}
+		]
+	},
+	"bundle": {
+		"targets": ["app", "dmg"],
+		"createUpdaterArtifacts": true,
+		"category": "Game",
+		"macOS": {
+			"minimumSystemVersion": "13.3",
+			"signingIdentity": "-",
+			"hardenedRuntime": false,
+			"infoPlist": "macos/Info.plist",
+			"files": {
+				"Resources/en.lproj/InfoPlist.strings": "macos/en.lproj/InfoPlist.strings",
+				"Resources/ru.lproj/InfoPlist.strings": "macos/ru.lproj/InfoPlist.strings"
+			}
+		}
+	}
+}

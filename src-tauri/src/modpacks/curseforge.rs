@@ -103,7 +103,7 @@ impl Manifest {
 			return Err(invalid(format!("версия minecraft {:?}", mc.version)));
 		}
 		let overrides = self.overrides.clone().unwrap_or_else(|| "overrides".into());
-		let overrides = check_rel_path(overrides.trim_end_matches('/'))
+		let overrides = check_rel_path(fs_util::slashes(&overrides).trim_end_matches('/'))
 			.ok_or_else(|| invalid(format!("небезопасная папка overrides: {overrides}")))?;
 		self.overrides = Some(overrides);
 		if self.files.len() > MANIFEST_MAX_FILES {
@@ -516,6 +516,17 @@ mod tests {
 		assert_eq!(detect(&mut zip).as_deref(), Some("All the Mods 9"));
 		let m = read_manifest(&pack).unwrap();
 		assert_eq!(m.overrides_prefix(), "overrides/");
+
+		let mut windows = manifest(serde_json::json!([]));
+		windows["overrides"] = serde_json::json!("pack\\overrides\\");
+		write_pack(&pack, &windows, &[]);
+		assert_eq!(
+			read_manifest(&pack).unwrap().overrides_prefix(),
+			"pack/overrides/"
+		);
+		windows["overrides"] = serde_json::json!("..\\evil");
+		write_pack(&pack, &windows, &[]);
+		assert!(read_manifest(&pack).is_err());
 		let req = m.requirements().unwrap();
 		assert_eq!(
 			(

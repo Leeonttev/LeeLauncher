@@ -148,7 +148,7 @@ impl Index {
 		// Windows не различает регистр: два одинаковых пути писали бы в один файл одновременно.
 		let mut seen = std::collections::HashSet::new();
 		for file in &mut self.files {
-			file.path = check_rel_path(&file.path)
+			file.path = check_rel_path(&fs_util::slashes(&file.path))
 				.ok_or_else(|| invalid(format!("небезопасный путь: {}", file.path)))?;
 			if !seen.insert(file.path.to_lowercase()) {
 				return Err(invalid(format!("путь повторяется: {}", file.path)));
@@ -477,6 +477,7 @@ pub fn override_paths(archive: &Path, prefixes: &[&str]) -> Vec<String> {
 			&& !entry.is_dir()
 			&& let Ok(name) = entry.name()
 		{
+			let name = fs_util::slashes(&name);
 			for prefix in prefixes {
 				if let Some(rel) = name.strip_prefix(prefix).and_then(check_rel_path) {
 					seen.insert(rel);
@@ -617,6 +618,45 @@ mod tests {
 		assert!(req(serde_json::json!({ "forge": "47.2.0" })).is_err());
 		assert!(req(serde_json::json!({ "minecraft": "../1" })).is_err());
 		assert!(req(serde_json::json!({ "minecraft": "1.20.1", "forge": "a/../b" })).is_err());
+	}
+
+	/// Архив, собранный на Windows: `\\` вместо `/` и в индексе, и в именах записей.
+	#[test]
+	fn windows_separators() {
+		let dir = tempfile::tempdir().unwrap();
+		let pack = dir.path().join("p.mrpack");
+		let game = dir.path().join("game");
+		let json = index_json(
+			serde_json::json!([
+				{ "path": "mods\\a.jar", "hashes": { "sha1": SHA1_A }, "downloads": [], "fileSize": 3 }
+			]),
+			serde_json::json!({ "minecraft": "1.20.1" }),
+		);
+		write_zip(
+			&pack,
+			&[
+				(INDEX_NAME, json.as_bytes()),
+				("overrides\\config\\x.toml", b"x"),
+				("overrides/config\\y.toml", b"y"),
+			],
+		);
+		assert_eq!(read_index(&pack).unwrap().files[0].path, "mods/a.jar");
+		assert_eq!(
+			override_paths(&pack, &["overrides/"]),
+			vec!["config/x.toml", "config/y.toml"]
+		);
+		let result = extract_overrides(
+			&pack,
+			&["overrides/"],
+			&game,
+			&OverridePolicy::default(),
+			Limits::DEFAULT,
+			&CancellationToken::new(),
+		)
+		.unwrap();
+		assert_eq!(result.written.len(), 2);
+		assert_eq!(std::fs::read(game.join("config/x.toml")).unwrap(), b"x");
+		assert_eq!(std::fs::read(game.join("config/y.toml")).unwrap(), b"y");
 	}
 
 	#[test]

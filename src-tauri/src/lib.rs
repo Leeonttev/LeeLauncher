@@ -75,6 +75,15 @@ pub fn run() {
 			.plugin(tauri_plugin_updater::Builder::new().build());
 	}
 
+	// Меню приложения: без «Правки» не работают Cmd+C/V в полях, а Cmd+Q должен пройти
+	// через ту же проверку игры, что «Выйти» из трея.
+	#[cfg(target_os = "macos")]
+	{
+		builder = builder
+			.menu(tray::app_menu)
+			.on_menu_event(|app, event| tray::on_app_menu(app, event.id().as_ref()));
+	}
+
 	builder
 		.plugin(log_plugin())
 		.plugin(tauri_plugin_opener::init())
@@ -230,6 +239,18 @@ pub fn run() {
 				app.handle().clone(),
 				launcher.clone(),
 			));
+			// Описания версий установленных сборок, которые Mojang обновила после установки.
+			let fresh = launcher.clone();
+			let handle = app.handle().clone();
+			tauri::async_runtime::spawn(async move {
+				if instances::fresh::refresh_installed(&fresh).await {
+					use tauri::Emitter;
+					let list = fresh.instances.list().await;
+					if let Err(err) = handle.emit(instances::commands::EVENT_CHANGED, list) {
+						log::warn!("не удалось отправить instances-changed: {err}");
+					}
+				}
+			});
 			app.manage(presence::Presence::start(launcher.clone()));
 			app.manage(tray::Tray::default());
 			app.manage(launcher);
@@ -242,9 +263,11 @@ pub fn run() {
 				.find(|w| w.label == MAIN_WINDOW)
 				.expect("в tauri.conf.json нет окна main")
 				.clone();
-			let window = WebviewWindowBuilder::from_config(app.handle(), &config)?
-				.data_directory(paths::webview_data_dir())
-				.build()?;
+			let builder = WebviewWindowBuilder::from_config(app.handle(), &config)?;
+			// WKWebView своей папки данных не умеет: профиль у него один на приложение.
+			#[cfg(not(target_os = "macos"))]
+			let builder = builder.data_directory(paths::webview_data_dir());
+			let window = builder.build()?;
 
 			std::thread::spawn(move || {
 				std::thread::sleep(SHOW_FALLBACK_DELAY);
@@ -254,8 +277,23 @@ pub fn run() {
 			});
 			Ok(())
 		})
-		.run(context)
-		.expect("не удалось запустить LeeLauncher");
+		.build(context)
+		.expect("не удалось запустить LeeLauncher")
+		.run(on_run_event);
+}
+
+fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+	// Щелчок по значку в Dock, когда окна не видно (в том числе спрятанного в трей во время игры).
+	#[cfg(target_os = "macos")]
+	if let tauri::RunEvent::Reopen {
+		has_visible_windows: false,
+		..
+	} = event
+	{
+		tray::show(app);
+	}
+	#[cfg(not(target_os = "macos"))]
+	let _ = (app, event);
 }
 
 /// Логи: `<данные>/logs/leelauncher.log` (5 файлов по 5 МБ) и консоль.

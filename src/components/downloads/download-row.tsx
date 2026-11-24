@@ -27,6 +27,7 @@ import { LOADER_NAMES, javaMajorFor } from "@/lib/loaders";
 import { openManualDialog } from "@/lib/manual";
 import { openFailedFiles } from "@/lib/modpacks";
 import { cn } from "@/lib/utils";
+import { ariaDeleteKey, isDeleteKey } from "@/lib/platform";
 
 export type DownloadRowKind = "active" | "queued" | "done";
 
@@ -79,7 +80,7 @@ export function DownloadRow({ download, kind, instance, now }: DownloadRowProps)
 				: t("downloads.dismiss");
 
 	const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-		if (event.key !== "Delete") return;
+		if (!isDeleteKey(event)) return;
 		event.preventDefault();
 		rowAction();
 	};
@@ -88,7 +89,7 @@ export function DownloadRow({ download, kind, instance, now }: DownloadRowProps)
 		<button
 			type="button"
 			data-link
-			aria-keyshortcuts="Delete"
+			aria-keyshortcuts={ariaDeleteKey}
 			className={cn("block max-w-full truncate text-sm/5 font-semibold", stretchedLink)}
 			onClick={() => {
 				setDownloadsOpen(false);

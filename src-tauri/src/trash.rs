@@ -3,7 +3,7 @@
 use std::io;
 use std::path::Path;
 
-/// В корзину без окон. Если корзина недоступна (сетевой диск), Windows удаляет сразу.
+/// В корзину без окон. Если корзины у тома нет (сетевой диск), файл удаляется сразу.
 pub fn delete(path: &Path) -> io::Result<()> {
 	if !path.exists() {
 		return Err(io::Error::new(
@@ -78,8 +78,48 @@ fn platform_delete(path: &Path) -> io::Result<()> {
 	Ok(())
 }
 
-#[cfg(not(windows))]
+/// Корзина Finder через NSFileManager: без AppleScript и запросов на автоматизацию.
+#[cfg(target_os = "macos")]
 fn platform_delete(path: &Path) -> io::Result<()> {
+	use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+	/// NSFeatureUnsupportedError: у тома нет корзины (сетевой диск, флешка без `.Trashes`).
+	const NO_TRASH: isize = 3328;
+	const NO_SUCH_FILE: [isize; 2] = [4, 260];
+	const NO_PERMISSION: [isize; 2] = [257, 513];
+
+	let absolute = std::path::absolute(path)?;
+	let url = NSURL::fileURLWithPath(&NSString::from_str(&absolute.to_string_lossy()));
+	let manager = NSFileManager::defaultManager();
+	match manager.trashItemAtURL_resultingItemURL_error(&url, None) {
+		Ok(()) => Ok(()),
+		Err(err) if err.code() == NO_TRASH => remove(path),
+		Err(err) => {
+			let kind = match err.code() {
+				code if NO_SUCH_FILE.contains(&code) => io::ErrorKind::NotFound,
+				code if NO_PERMISSION.contains(&code) => io::ErrorKind::PermissionDenied,
+				_ => io::ErrorKind::Other,
+			};
+			Err(io::Error::new(
+				kind,
+				format!(
+					"{}: не удалось удалить в корзину ({}, код {})",
+					absolute.display(),
+					err.localizedDescription(),
+					err.code()
+				),
+			))
+		}
+	}
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn platform_delete(path: &Path) -> io::Result<()> {
+	remove(path)
+}
+
+#[cfg(not(windows))]
+fn remove(path: &Path) -> io::Result<()> {
 	if path.is_dir() {
 		std::fs::remove_dir_all(path)
 	} else {

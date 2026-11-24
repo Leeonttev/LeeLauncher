@@ -2,6 +2,30 @@
 
 Раздел `## X.Y.Z` попадает в релиз и на экран обновления в лаунчере. Внутри раздела — блоки `<!-- ru -->` и `<!-- en -->`.
 
+## 0.2.0
+
+<!-- ru -->
+
+- LeeLauncher теперь работает на macOS — на Mac с процессорами Apple и Intel. Старые версии Minecraft на Mac с Apple запускаются через Rosetta, нужная Java скачивается сама
+- Защита от уязвимости minecraft2shell (вредоносный шрифт в ресурспаке): уязвимые версии Minecraft отмечены значком и предупреждением, а перед их запуском лаунчер выключает автоматическое принятие ресурспаков с серверов — игра будет спрашивать. Выключается в настройках
+- Исправления Mojang для уже установленных сборок теперь приходят сами: лаунчер сверяет описания версий при запуске и докачивает изменившиеся файлы
+- Новый вид раздела «Скины», а скины, которые были на аккаунте, сами сохраняются в библиотеку
+- Исправлена ошибка «По этому пути нет рабочей Java» при первой установке на чистой Windows
+- Кнопка «Настройки Java» в ошибках теперь ведёт к нужной настройке
+- В настройках появилась Java 25 для Minecraft 26.1 и новее
+- Поля ввода в тёмной теме стали светлее
+
+<!-- en -->
+
+- LeeLauncher now runs on macOS — on Apple silicon and Intel Macs. Older Minecraft versions run through Rosetta on Apple silicon, and the right Java is downloaded for you
+- Protection against the minecraft2shell vulnerability (a malicious font in a resource pack): vulnerable Minecraft versions are marked with a badge and a warning, and before launching them the launcher turns off automatic acceptance of server resource packs, so the game asks you first. Can be turned off in settings
+- Mojang's fixes for already installed instances now arrive on their own: the launcher checks version files at startup and downloads what changed
+- A new look for the Skins section, and skins that were on your account are saved to your library automatically
+- Fixed "There's no working Java at this path" on the first install on a clean Windows
+- The "Java settings" button in errors now takes you to the right setting
+- Java 25 is now in settings for Minecraft 26.1 and newer
+- Input fields in the dark theme are lighter
+
 ## 0.1.2
 
 <!-- ru -->

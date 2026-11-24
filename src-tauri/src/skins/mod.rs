@@ -19,7 +19,7 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use self::library::Library;
+use self::library::{Library, Recorded};
 use self::mojang::{Call, Failed, Limiter, Mojang, too_often};
 use self::profile::{ParsedProfile, ProfileStore, StoredProfile, StoredSkin};
 use self::textures::{Download, TEXTURES_BASE, Textures};
@@ -48,14 +48,46 @@ impl SkinModel {
 	}
 }
 
+/// Откуда скин в библиотеке.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkinOrigin {
+	/// Файл с диска (и все записи, сделанные до истории).
+	#[default]
+	Upload,
+	/// Лаунчер увидел скин на аккаунте.
+	Account,
+	/// Каталог скинов.
+	#[allow(
+		dead_code,
+		reason = "каталога пока нет, значение уже читается из файла"
+	)]
+	Catalog,
+	/// Импорт истории.
+	#[allow(dead_code, reason = "импорта пока нет, значение уже читается из файла")]
+	Import,
+}
+
+/// Скин был надет на аккаунте: первый и последний раз, когда его видел лаунчер.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkinSeen {
+	pub account_id: String,
+	pub first_seen_at: String,
+	pub last_seen_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkinEntry {
 	pub id: String,
+	/// У `origin: account` пустое, пока пользователь не переименует.
 	pub name: String,
 	pub model: SkinModel,
 	pub legacy: bool,
 	pub added_at: String,
+	pub origin: SkinOrigin,
+	pub seen: Vec<SkinSeen>,
 	/// `data:image/png;base64,…`
 	pub texture: String,
 }
@@ -100,7 +132,7 @@ pub struct SkinApplied {
 	pub profile: SkinProfile,
 	/// Скин надет, плащ нет.
 	pub cape_error: Option<AppError>,
-	/// Несохранённый скин, который был на аккаунте, положен в библиотеку.
+	/// Прежний скин аккаунта только что попал в историю (обычно он там уже есть, тогда `null`).
 	pub saved_previous: Option<SkinEntry>,
 }
 
@@ -429,12 +461,40 @@ impl Skins {
 			last_error: None,
 			refetch: false,
 		};
+		let recorded = self.record_history(account_id).await;
 		let value = self
 			.view(account_id, false, None)
 			.await?
 			.ok_or_else(|| AppError::storage("профиль не записан"))?;
-		let changed = !same_skin(saved.as_ref(), Some(&value));
+		let changed = !same_skin(saved.as_ref(), Some(&value)) || recorded.changed;
 		Ok(Outcome { value, changed })
+	}
+
+	/// Текущий скин аккаунта — в историю библиотеки. Сбой только в лог: профиль уже записан.
+	async fn record_history(&self, account_id: &str) -> Recorded {
+		let (store, library, account) = (
+			self.store.clone(),
+			self.library.clone(),
+			account_id.to_owned(),
+		);
+		blocking(move || {
+			let Some(skin) = store
+				.read(&account)
+				.and_then(|profile| profile.skin)
+				.filter(|skin| !skin.default)
+			else {
+				return Ok(Recorded::default());
+			};
+			let Some(png) = store.texture(&skin.key) else {
+				return Ok(Recorded::default());
+			};
+			library.record_worn(&png, skin.model, &account, &skin.key)
+		})
+		.await
+		.unwrap_or_else(|err| {
+			log::warn!("скин аккаунта не записан в историю: {err}");
+			Recorded::default()
+		})
 	}
 
 	/// Сохранённые профили без сети: только скины с текстурой.
@@ -455,6 +515,7 @@ impl Skins {
 	}
 
 	/// Кладёт текущий скин в библиотеку: текстура из кэша, имя — ник. Уже есть — та же запись.
+	/// Скин и так попадает в историю сам; команда нужна, чтобы вернуть убранный из истории.
 	pub async fn save_current(
 		&self,
 		account_id: &str,
@@ -482,7 +543,7 @@ impl Skins {
 			let png = store
 				.texture(&skin.key)
 				.ok_or_else(|| AppError::new(ErrorCode::SkinNotFound))?;
-			library.add_bytes(&png, &nick, Some(&skin.key))
+			library.add_bytes(&png, &nick, Some(&skin.key), &account)
 		})
 		.await
 	}
@@ -493,7 +554,6 @@ impl Skins {
 		&self,
 		account_id: &str,
 		kind: AccountKind,
-		nick: &str,
 		request: ApplyRequest,
 		token: F,
 	) -> Result<Outcome<SkinApplied>, AppError>
@@ -528,12 +588,13 @@ impl Skins {
 		let upload = self
 			.prepare_upload(account_id, skin_id.as_deref(), model, saved.as_ref())
 			.await?;
-		// Страховка: новый скин заменит несохранённый, а другой копии у него нет.
-		let previous = if skin_id.is_some() {
+		// Страховка: новый скин заменит прежний, поэтому он сначала уходит в историю.
+		let before = if skin_id.is_some() {
 			self.previous_skin(saved.as_ref(), allow_lose_previous)
-				.await?
+				.await?;
+			self.record_history(account_id).await
 		} else {
-			None
+			Recorded::default()
 		};
 
 		let (store, account) = (self.store.clone(), account_id.to_owned());
@@ -603,17 +664,17 @@ impl Skins {
 		let library_id = uploaded
 			.as_ref()
 			.and_then(|upload| upload.library_id.clone());
-		let saved_previous = self
-			.after_upload(library_id, new_key.as_deref(), previous, nick)
-			.await;
+		self.remember_key(library_id, new_key).await;
+		let after = self.record_history(account_id).await;
 
 		let value = self
 			.view(account_id, unparsed, None)
 			.await?
 			.ok_or_else(|| server_changed_but(&AppError::storage("профиль не записан")))?;
 		let changed = !same_skin(saved.as_ref(), Some(&value));
+		let saved_previous = before.added;
 		Ok(Outcome {
-			changed: changed || saved_previous.is_some(),
+			changed: changed || before.changed || after.changed,
 			value: SkinApplied {
 				profile: value,
 				cape_error,
@@ -622,16 +683,16 @@ impl Skins {
 		})
 	}
 
-	/// Текстура несохранённого скина, который заменит загрузка. Если сохранить его нечем
+	/// Скин, который заменит загрузка, должен попасть в историю. Если его нечем сохранить
 	/// (нет профиля или текстуры), без согласия пользователя запрос не уходит.
 	async fn previous_skin(
 		&self,
 		saved: Option<&SkinProfile>,
 		allow_lose: bool,
-	) -> Result<Option<(String, Vec<u8>)>, AppError> {
+	) -> Result<(), AppError> {
 		let lost = |reason: &str| {
 			if allow_lose {
-				Ok(None)
+				Ok(())
 			} else {
 				Err(AppError::coded(ErrorCode::SkinPreviousUnknown, reason))
 			}
@@ -644,12 +705,13 @@ impl Skins {
 			.as_ref()
 			.filter(|skin| !skin.is_default && skin.skin_id.is_none())
 		else {
-			return Ok(None);
+			return Ok(());
 		};
 		let (store, key) = (self.store.clone(), skin.key.clone());
-		match blocking(move || Ok(store.texture(&key).map(|png| (key, png)))).await? {
-			Some(previous) => Ok(Some(previous)),
-			None => lost("no_texture"),
+		if blocking(move || Ok(store.has_texture(&key))).await? {
+			Ok(())
+		} else {
+			lost("no_texture")
 		}
 	}
 
@@ -703,34 +765,15 @@ impl Skins {
 		.await
 	}
 
-	/// После успеха: запомнить ключ за скином и сохранить прежний. Сервер уже изменён,
-	/// поэтому сбой здесь только в лог.
-	async fn after_upload(
-		&self,
-		library_id: Option<String>,
-		new_key: Option<&str>,
-		previous: Option<(String, Vec<u8>)>,
-		nick: &str,
-	) -> Option<SkinEntry> {
-		let new_key = new_key.map(str::to_owned);
-		let nick = nick.to_owned();
+	/// После успеха: запомнить ключ за скином. Сервер уже изменён, поэтому сбой только в лог.
+	async fn remember_key(&self, library_id: Option<String>, new_key: Option<String>) {
+		let (Some(id), Some(key)) = (library_id, new_key) else {
+			return;
+		};
 		let library = self.library.clone();
-		let saved = blocking(move || {
-			if let (Some(id), Some(key)) = (&library_id, &new_key)
-				&& let Err(err) = library.remember_key(key, id)
-			{
-				log::warn!("ключ текстуры не записан: {err}");
-			}
-			let Some((key, png)) = previous.filter(|(key, _)| Some(key) != new_key.as_ref()) else {
-				return Ok(None);
-			};
-			library.add_bytes(&png, &nick, Some(&key)).map(Some)
-		})
-		.await;
-		saved.unwrap_or_else(|err| {
-			log::warn!("прежний скин не сохранён: {err}");
-			None
-		})
+		if let Err(err) = blocking(move || library.remember_key(&key, &id)).await {
+			log::warn!("ключ текстуры не записан: {err}");
+		}
 	}
 
 	/// На аккаунте будет обычный скин Minecraft. Ответ сразу заменяет профиль.
@@ -751,6 +794,8 @@ impl Skins {
 		let permit = self.mojang.begin(account_id)?;
 		let slot = self.slot(account_id);
 		let mut slot = slot.lock().await;
+		// Снимаемый скин остаётся в истории.
+		let before = self.record_history(account_id).await;
 		let parsed = self
 			.mojang
 			.call(Some(&permit), Call::ResetSkin, &token)
@@ -778,11 +823,12 @@ impl Skins {
 			last_error: None,
 			refetch: unparsed,
 		};
+		let after = self.record_history(account_id).await;
 		let value = self
 			.view(account_id, unparsed, None)
 			.await?
 			.ok_or_else(|| server_changed_but(&AppError::storage("профиль не записан")))?;
-		let changed = !same_skin(saved.as_ref(), Some(&value));
+		let changed = !same_skin(saved.as_ref(), Some(&value)) || before.changed || after.changed;
 		Ok(Outcome { value, changed })
 	}
 
@@ -977,7 +1023,7 @@ mod tests {
 				cape: None,
 				allow_lose_previous: true,
 			};
-			self.apply(account_id, kind, "Steve", request, token)
+			self.apply(account_id, kind, request, token)
 				.await
 				.map(|outcome| outcome.value)
 		}
@@ -1716,7 +1762,7 @@ mod tests {
 
 		async fn send(&self, request: ApplyRequest) -> Result<Outcome<SkinApplied>, AppError> {
 			self.skins
-				.apply("acc", AccountKind::Microsoft, "Steve", request, fixed_token)
+				.apply("acc", AccountKind::Microsoft, request, fixed_token)
 				.await
 		}
 
@@ -1737,7 +1783,11 @@ mod tests {
 		let worn = profile.skin.unwrap();
 		assert_eq!(worn.key, "abc");
 		assert_eq!(worn.model, SkinModel::Slim);
-		assert_eq!(worn.skin_id, None);
+		// Текущий скин сам попал в историю.
+		let history = f.skins.library.skins().unwrap();
+		assert_eq!(history.len(), 2);
+		assert_eq!(worn.skin_id.as_deref(), Some(history[0].id.as_str()));
+		assert_eq!(history[0].origin, SkinOrigin::Account);
 		assert!(!worn.is_default);
 		assert!(worn.texture.unwrap().starts_with("data:image/png;base64,"));
 		assert_eq!(profile.active_cape_id.as_deref(), Some(CAPE_A));
@@ -2129,6 +2179,11 @@ mod tests {
 			profile.skin.unwrap().skin_id.as_deref(),
 			Some(f.skin.id.as_str())
 		);
+		// Пересохранённая картинка не становится вторым скином истории.
+		let history = f.skins.library.skins().unwrap();
+		assert_eq!(history.len(), 1);
+		assert_eq!(history[0].origin, SkinOrigin::Upload);
+		assert_eq!(history[0].seen.len(), 1);
 	}
 
 	#[tokio::test]
@@ -2293,7 +2348,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn wearing_over_unsaved_skin_saves_it() {
+	async fn wearing_over_seen_skin_keeps_it_in_history() {
 		let (base, _log) = server(vec![
 			profile_reply("unsaved", "CLASSIC", None),
 			profile_reply("new", "SLIM", None),
@@ -2302,7 +2357,7 @@ mod tests {
 		let (textures_base, _tlog) = textures_for("unsaved", 9).await;
 		let f = full_fixture(&base, &textures_base, free_limiter());
 		let before = f.read(false).await.unwrap().value.skin.unwrap();
-		assert_eq!(before.skin_id, None);
+		let kept = before.skin_id.clone().unwrap();
 		let applied = f
 			.send(ApplyRequest {
 				skin_id: Some(f.skin.id.clone()),
@@ -2311,10 +2366,17 @@ mod tests {
 			.await
 			.unwrap()
 			.value;
-		let saved = applied.saved_previous.unwrap();
-		assert_eq!(saved.name, "Steve");
-		assert_eq!(Some(saved.texture.clone()), before.texture);
-		assert_eq!(f.skins.library.skins().unwrap().len(), 2);
+		// Уже в истории: заново не сохраняется.
+		assert!(applied.saved_previous.is_none());
+		let history = f.skins.library.skins().unwrap();
+		assert_eq!(history.len(), 2);
+		let old = history.iter().find(|skin| skin.id == kept).unwrap();
+		assert_eq!(Some(old.texture.clone()), before.texture);
+		assert_eq!(old.name, "");
+		// Надетый скин библиотеки помнит аккаунт, происхождение прежнее.
+		let worn = history.iter().find(|skin| skin.id == f.skin.id).unwrap();
+		assert_eq!(worn.origin, SkinOrigin::Upload);
+		assert_eq!(worn.seen[0].account_id, "acc");
 		// Кэш старой текстуры убран: на неё больше никто не ссылается, копия — в библиотеке.
 		assert!(!f.textures_dir().join("unsaved.png").exists());
 	}
@@ -2405,14 +2467,19 @@ mod tests {
 		f.read(false).await.unwrap();
 		let worn = f.skins.worn().await.unwrap();
 		assert_eq!(worn.keys().collect::<Vec<_>>(), ["acc"]);
-		assert_eq!(worn["acc"].skin_id, None);
+		let history_id = worn["acc"].skin_id.clone().unwrap();
+		// Убран из истории — сам не возвращается, но сохранить вручную можно.
+		f.skins.library.remove(&history_id, |_| Ok(())).unwrap();
+		assert_eq!(f.skins.worn().await.unwrap()["acc"].skin_id, None);
 
 		let entry = f
 			.skins
 			.save_current("acc", AccountKind::Microsoft, "Steve")
 			.await
 			.unwrap();
+		assert_eq!(entry.id, history_id);
 		assert_eq!(entry.name, "Steve");
+		assert_eq!(entry.origin, SkinOrigin::Account);
 		let again = f
 			.skins
 			.save_current("acc", AccountKind::Microsoft, "Другой")
@@ -2452,7 +2519,8 @@ mod tests {
 		assert!(!f.skins.forget("acc").await.unwrap());
 		assert!(f.skins.worn().await.unwrap().is_empty());
 		assert!(!f.textures_dir().join("abc.png").exists());
-		assert_eq!(f.skins.library.skins().unwrap().len(), 1);
+		// История остаётся.
+		assert_eq!(f.skins.library.skins().unwrap().len(), 2);
 	}
 
 	#[tokio::test]
@@ -2472,7 +2540,6 @@ mod tests {
 				.apply(
 					"off",
 					offline,
-					"Steve",
 					ApplyRequest {
 						skin_id: Some(f.skin.id.clone()),
 						..Default::default()
@@ -2504,6 +2571,119 @@ mod tests {
 		let err = f.apply("acc").await.unwrap_err();
 		assert_eq!(err.code, ErrorCode::Storage);
 		assert!(err.details.unwrap().contains(SERVER_CHANGED));
+	}
+
+	#[tokio::test]
+	async fn history_grows_once_and_tracks_seen() {
+		let responses = vec![
+			profile_reply("abc", "SLIM", None),
+			profile_reply("abc", "SLIM", Some(CAPE_A)),
+		];
+		let (base, _log) = server(responses).await;
+		let (textures_base, _tlog) = textures_for("abc", 9).await;
+		let mut f = full_fixture(&base, &textures_base, free_limiter());
+		f.skins.policy.every = Duration::ZERO;
+		assert!(f.read(false).await.unwrap().changed);
+		let first = f.skins.library.skins().unwrap();
+		assert_eq!(first.len(), 2);
+		let added = &first[0];
+		assert_eq!(added.origin, SkinOrigin::Account);
+		assert_eq!(added.name, "");
+		assert_eq!(added.model, SkinModel::Slim);
+		assert_eq!(added.seen.len(), 1);
+		assert_eq!(added.seen[0].account_id, "acc");
+		assert_eq!(added.seen[0].first_seen_at, added.seen[0].last_seen_at);
+
+		// Тот же скин снова: не дублируется, событие не нужно, `lastSeenAt` обновлён.
+		tokio::time::sleep(Duration::from_millis(1100)).await;
+		assert!(!f.read(false).await.unwrap().changed);
+		let second = f.skins.library.skins().unwrap();
+		assert_eq!(second.len(), 2);
+		let seen = &second[0].seen[0];
+		assert_eq!(seen.first_seen_at, added.seen[0].first_seen_at);
+		assert!(seen.last_seen_at > added.seen[0].last_seen_at);
+	}
+
+	#[tokio::test]
+	async fn second_account_is_added_to_seen() {
+		let responses = vec![
+			profile_reply("abc", "SLIM", None),
+			profile_reply("abc", "SLIM", None),
+		];
+		let (base, _log) = server(responses).await;
+		let (textures_base, _tlog) = textures_for("abc", 9).await;
+		let f = full_fixture(&base, &textures_base, free_limiter());
+		f.read(false).await.unwrap();
+		let other = f
+			.skins
+			.profile("other", AccountKind::Microsoft, false, fixed_token)
+			.await
+			.unwrap();
+		// Новый аккаунт в истории — повод перечитать библиотеку.
+		assert!(other.changed);
+		let history = f.skins.library.skins().unwrap();
+		assert_eq!(history.len(), 2);
+		let accounts: Vec<_> = history[0]
+			.seen
+			.iter()
+			.map(|seen| seen.account_id.as_str())
+			.collect();
+		assert_eq!(accounts, ["acc", "other"]);
+	}
+
+	#[tokio::test]
+	async fn dismissed_skin_does_not_come_back() {
+		let responses = vec![
+			profile_reply("abc", "SLIM", None),
+			profile_reply("abc", "SLIM", None),
+		];
+		let (base, _log) = server(responses).await;
+		let (textures_base, _tlog) = textures_for("abc", 9).await;
+		let mut f = full_fixture(&base, &textures_base, free_limiter());
+		f.skins.policy.every = Duration::ZERO;
+		let id = f
+			.read(false)
+			.await
+			.unwrap()
+			.value
+			.skin
+			.unwrap()
+			.skin_id
+			.unwrap();
+		f.skins.library.remove(&id, |_| Ok(())).unwrap();
+		let again = f.read(false).await.unwrap();
+		assert_eq!(again.value.skin.unwrap().skin_id, None);
+		assert_eq!(f.skins.library.skins().unwrap().len(), 1);
+	}
+
+	#[tokio::test]
+	async fn default_skin_is_not_history() {
+		let default_body = r#"{"skins":[{"state":"ACTIVE","url":"https://textures.minecraft.net/texture/steve","variant":"CLASSIC","alias":"STEVE"}],"capes":[]}"#;
+		let (base, _log) = server(vec![reply("200 OK", "", default_body)]).await;
+		let (textures_base, _tlog) = textures_for("steve", 9).await;
+		let f = full_fixture(&base, &textures_base, free_limiter());
+		f.read(false).await.unwrap();
+		assert_eq!(f.skins.library.skins().unwrap().len(), 1);
+	}
+
+	#[tokio::test]
+	async fn reset_keeps_removed_skin_in_history() {
+		let default_body = r#"{"skins":[{"state":"ACTIVE","url":"https://textures.minecraft.net/texture/steve","variant":"CLASSIC","alias":"STEVE"}],"capes":[]}"#;
+		let (base, _log) = server(vec![
+			profile_reply("abc", "SLIM", None),
+			reply("200 OK", "", default_body),
+		])
+		.await;
+		let (textures_base, _tlog) = textures_for("abc", 9).await;
+		let f = full_fixture(&base, &textures_base, free_limiter());
+		f.read(false).await.unwrap();
+		f.skins
+			.reset("acc", AccountKind::Microsoft, fixed_token)
+			.await
+			.unwrap();
+		let history = f.skins.library.skins().unwrap();
+		assert_eq!(history.len(), 2);
+		assert_eq!(history[0].origin, SkinOrigin::Account);
 	}
 
 	#[test]
@@ -2617,10 +2797,12 @@ mod tests {
 			f.send(wear_request(&f)).await
 		};
 		let (read, wear) = tokio::join!(f.read(false), wear);
-		assert_eq!(read.unwrap().value.skin.unwrap().skin_id, None);
-		let saved = wear.unwrap().value.saved_previous.unwrap();
-		assert_eq!(saved.name, "Steve");
-		assert_eq!(f.skins.library.skins().unwrap().len(), 2);
+		// Чтение успело положить скин в историю, надевание его не потеряло.
+		let kept = read.unwrap().value.skin.unwrap().skin_id.unwrap();
+		assert!(wear.unwrap().value.saved_previous.is_none());
+		let history = f.skins.library.skins().unwrap();
+		assert_eq!(history.len(), 2);
+		assert!(history.iter().any(|skin| skin.id == kept));
 		let methods: Vec<_> = log
 			.lock()
 			.unwrap()
@@ -2784,7 +2966,7 @@ mod tests {
 			..Default::default()
 		};
 		let applied = skins
-			.apply("acc", AccountKind::Microsoft, "Nick", request, fixed_token)
+			.apply("acc", AccountKind::Microsoft, request, fixed_token)
 			.await
 			.unwrap()
 			.value;
@@ -2794,7 +2976,7 @@ mod tests {
 		);
 		let raw: serde_json::Value =
 			serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
-		assert_eq!(raw["version"], 2);
+		assert_eq!(raw["version"], 3);
 		assert!(raw.get("worn").is_none());
 		assert_eq!(raw["skins"].as_array().unwrap().len(), 2);
 		assert_eq!(raw["keys"]["k1"], serde_json::json!(two.id));

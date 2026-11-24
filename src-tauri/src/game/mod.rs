@@ -7,6 +7,7 @@ mod live_tests;
 pub mod logs;
 mod options;
 mod running;
+pub mod server_packs;
 mod tree;
 
 use std::collections::HashMap;
@@ -158,6 +159,8 @@ pub trait GameEvents: Send + Sync {
 	fn process(&self, event: ProcessEvent);
 	fn log(&self, batch: LogBatch);
 	fn changed(&self, instances: Vec<Instance>);
+	/// У серверов снят «принимать ресурспак автоматически» (уязвимый FreeType).
+	fn server_packs_guarded(&self, _guarded: server_packs::Guarded) {}
 }
 
 /// Запущенные игры и их логи; лежит в [`Launcher`].
@@ -271,6 +274,8 @@ pub struct Plan {
 	/// Все аргументы для лога (токен скрыт).
 	pub masked: Vec<String>,
 	pub game_dir: PathBuf,
+	/// В описании версии уязвимый `lwjgl-freetype`.
+	pub font_vulnerable: bool,
 }
 
 /// Файлы и пути для запуска — всё, что читается с диска.
@@ -279,14 +284,15 @@ struct DiskState {
 	classpath: Vec<PathBuf>,
 	game_assets: PathBuf,
 	log_config: Option<PathBuf>,
+	/// Значок Dock на macOS (`icons/minecraft.icns` из ассетов), если он есть у версии.
+	dock_icon: Option<PathBuf>,
 }
 
-fn read_disk_state(
+fn read_version(
 	layout: &Layout,
 	instance: &Instance,
 	version_id: &str,
-	platform: Platform,
-) -> Result<DiskState, AppError> {
+) -> Result<VersionInfo, AppError> {
 	crate::meta::check_id("версия", version_id)?;
 	crate::meta::check_id("версия игры", &instance.game_version)?;
 	let json_path = layout.version_json(version_id);
@@ -295,7 +301,16 @@ fn read_disk_state(
 	let info: VersionInfo = serde_json::from_slice(&bytes)
 		.map_err(|e| missing(format!("{}: {e}", json_path.display())))?;
 	crate::meta::check_version_info(&info)?;
+	Ok(info)
+}
 
+fn read_disk_state(
+	layout: &Layout,
+	instance: &Instance,
+	version_id: &str,
+	info: VersionInfo,
+	platform: Platform,
+) -> Result<DiskState, AppError> {
 	let client = layout.version_jar(&instance.game_version);
 	let classpath = args::classpath(&info, &layout.libraries_dir(), &client, platform)?;
 	if let Some(absent) = classpath.iter().find(|p| !p.is_file()) {
@@ -344,20 +359,29 @@ fn read_disk_state(
 			log::warn!("не удалось записать {}: {err}", options::FILE_NAME);
 		}
 	}
+	let dock_icon = (platform.os == "osx")
+		.then(|| index.objects.get("icons/minecraft.icns"))
+		.flatten()
+		.filter(|a| crate::fs_util::is_sha1_hex(&a.hash))
+		.map(|a| layout.asset_object(&a.hash))
+		.filter(|p| p.is_file());
 	Ok(DiskState {
 		info,
 		classpath,
 		game_assets,
 		log_config,
+		dock_icon,
 	})
 }
 
-/// Подготовка запуска: Java, память, файлы, аргументы. Сеть не нужна.
+/// Подготовка запуска: Java, память, файлы, аргументы. Сеть нужна, только если описание версии
+/// обновилось и его библиотек ещё нет на диске.
 pub async fn prepare(
 	l: &Launcher,
 	instance: &Instance,
 	credentials: &LaunchCredentials,
 	world: Option<&str>,
+	cancel: &CancellationToken,
 ) -> Result<Plan, AppError> {
 	let installed = match (&instance.installed, instance.install_state) {
 		(Some(installed), InstallState::Installed) => installed.clone(),
@@ -371,23 +395,38 @@ pub async fn prepare(
 	let major = installed.java_major;
 	let settings = l.settings.get();
 	let configured = settings.java_paths.get(&major.to_string()).cloned();
+	let info = {
+		let layout = l.layout.clone();
+		let instance = instance.clone();
+		let version_id = installed.version_id.clone();
+		tokio::task::spawn_blocking(move || read_version(&layout, &instance, &version_id))
+			.await
+			.map_err(|e| AppError::unknown(e.to_string()))??
+	};
+	let arch = crate::meta::rules::required_java_arch(&info.libraries, Platform::current());
 	let java = java::select(
 		instance.java_path.as_deref(),
 		configured.as_deref(),
 		major,
+		arch,
 		&l.layout.java_dir(),
 		&l.java_found,
 	)
 	.await?
 	.ok_or_else(|| AppError::coded(ErrorCode::JavaNotFound, format!("Java {major}")))?;
+	java::ensure_runnable_arch(&java.arch)?;
 	let platform = Platform::with_arch(&java.arch);
+	fetch_missing_libraries(l, &info, &installed.version_id, platform, cancel).await?;
+	let font_vulnerable = crate::instances::fresh::has_vulnerable_freetype(
+		info.libraries.iter().map(|lib| lib.name.as_str()),
+	);
 
 	let disk = {
 		let layout = l.layout.clone();
 		let instance = instance.clone();
 		let version_id = installed.version_id.clone();
 		tokio::task::spawn_blocking(move || {
-			read_disk_state(&layout, &instance, &version_id, platform)
+			read_disk_state(&layout, &instance, &version_id, info, platform)
 		})
 		.await
 		.map_err(|e| AppError::unknown(e.to_string()))??
@@ -422,6 +461,7 @@ pub async fn prepare(
 		libraries_dir: &libraries,
 		natives_dir: &natives,
 		log_config: disk.log_config.as_deref(),
+		dock_icon: disk.dock_icon.as_deref(),
 		memory,
 		resolution: instance.resolution.and_then(GameWindow::size),
 		user_jvm_args: &user_args,
@@ -435,7 +475,87 @@ pub async fn prepare(
 		args,
 		masked,
 		game_dir,
+		font_vulnerable,
 	})
+}
+
+/// Библиотеки из описания версии, которых нет на диске (Mojang обновила описание после установки),
+/// докачиваются перед запуском. Нечего качать — сеть не нужна.
+async fn fetch_missing_libraries(
+	l: &Launcher,
+	info: &VersionInfo,
+	version_id: &str,
+	platform: Platform,
+	cancel: &CancellationToken,
+) -> Result<(), AppError> {
+	let (jobs, natives) = crate::instances::install::library_jobs(info, &l.layout, platform)?;
+	let missing: Vec<_> = jobs.into_iter().filter(|j| !j.path.is_file()).collect();
+	if missing.is_empty() {
+		return Ok(());
+	}
+	log::info!(
+		"запуск: докачиваем библиотеки ({}): {}",
+		missing.len(),
+		missing
+			.iter()
+			.filter_map(|j| j.path.file_name())
+			.map(|n| n.to_string_lossy())
+			.collect::<Vec<_>>()
+			.join(", ")
+	);
+	let fetched: Vec<PathBuf> = missing.iter().map(|j| j.path.clone()).collect();
+	l.dl.files(
+		missing,
+		crate::download::Verify::Size,
+		crate::download::Progress::silent(),
+		cancel,
+	)
+	.await
+	.map_err(|err| match err {
+		crate::download::DownloadError::Cancelled => AppError::new(ErrorCode::Cancelled),
+		err if err.is_network() => AppError::coded(ErrorCode::Network, err.to_string()),
+		err => AppError::from(err),
+	})?;
+	let natives: Vec<_> = natives
+		.into_iter()
+		.filter(|n| fetched.contains(&n.path))
+		.collect();
+	if natives.is_empty() {
+		return Ok(());
+	}
+	let dir = l.layout.natives_dir(version_id);
+	tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+		std::fs::create_dir_all(&dir)
+			.map_err(|e| AppError::storage(format!("{}: {e}", dir.display())))?;
+		for jar in &natives {
+			crate::instances::install::extract_natives(&jar.path, &dir, &jar.exclude)
+				.map_err(|e| AppError::storage(format!("natives {}: {e}", jar.path.display())))?;
+		}
+		Ok(())
+	})
+	.await
+	.map_err(|e| AppError::unknown(e.to_string()))?
+}
+
+/// Снимает у серверов автоматическое принятие ресурспаков; запуск от ошибок не срывается.
+async fn guard_server_packs(id: &str, game_dir: &Path, events: &dyn GameEvents) {
+	let dir = game_dir.to_path_buf();
+	let result = tokio::task::spawn_blocking(move || server_packs::guard(&dir))
+		.await
+		.unwrap_or_else(|e| Err(e.to_string()));
+	match result {
+		Ok(0) => {}
+		Ok(servers) => {
+			log::info!(
+				"запуск {id}: у серверов ({servers}) снято автоматическое принятие ресурспаков"
+			);
+			events.server_packs_guarded(server_packs::Guarded {
+				id: id.to_owned(),
+				servers,
+			});
+		}
+		Err(err) => log::warn!("запуск {id}: {} не изменён: {err}", server_packs::FILE_NAME),
+	}
 }
 
 /// Длина командной строки Windows: аргументы через пробел, с кавычками.
@@ -549,7 +669,10 @@ where
 		let mut event = ProcessEvent::new(&id, ProcessState::Starting);
 		event.account = Some(who);
 		events.process(event);
-		let plan = prepare(&l, &instance, &creds, world.as_deref()).await?;
+		let plan = prepare(&l, &instance, &creds, world.as_deref(), &kill).await?;
+		if plan.font_vulnerable && l.settings.get().protect_server_packs {
+			guard_server_packs(&id, &plan.game_dir, events.as_ref()).await;
+		}
 		// Java выбрана: с этой минуты её не обновляем (`java_in_use`), хотя процесса ещё нет.
 		l.games.set_running(RunningGame {
 			instance_id: id.clone(),

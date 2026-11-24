@@ -1,4 +1,4 @@
-import { Pause, Play, RefreshCw } from "lucide-react";
+import { Footprints, Pause, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IdleAnimation, SkinViewer, WalkingAnimation, WaveAnimation } from "skinview3d";
@@ -62,14 +62,16 @@ function PixelLayer({
 	);
 }
 
-/** `loadSkin(url)` у skinview3d применяет картинку, даже если её уже сменили, поэтому грузим сами и отдаём готовую. */
-function loadTexture(src: string) {
-	return new Promise<HTMLImageElement>((resolve, reject) => {
-		const image = new Image();
-		image.onload = () => resolve(image);
-		image.onerror = reject;
-		image.src = src;
-	});
+/**
+ * `loadSkin(url)` у skinview3d применяет картинку, даже если её уже сменили, поэтому грузим сами и отдаём готовую.
+ * Ждём `decode()`, а не `onload`: WebKit после `onload` может ещё не раскодировать картинку, и первый
+ * `drawImage` в холст skinview3d рисует пустоту — прозрачная текстура на непрозрачном слое выходит чёрной.
+ */
+async function loadTexture(src: string) {
+	const image = new Image();
+	image.src = src;
+	await image.decode();
+	return image;
 }
 
 function easeOut(t: number) {
@@ -107,9 +109,10 @@ export function SkinStage({
 	texture,
 	model,
 	ariaLabel,
-	caption,
-	captionAction,
 	overlay,
+	center,
+	bottom,
+	onEscape,
 	celebration,
 	cape,
 	capeTurn,
@@ -120,10 +123,15 @@ export function SkinStage({
 	cape: string | null;
 	/** Растёт при выборе плаща: фигура один раз поворачивается спиной. */
 	capeTurn: number;
-	captionAction?: ReactNode;
 	ariaLabel: string;
-	caption: string | null;
+	/** Слева сверху: плашка статуса. */
 	overlay?: ReactNode;
+	/** По центру сцены: загрузка или ошибка без скина. */
+	center?: ReactNode;
+	/** Снизу по центру: «Вернуть» во время примерки. */
+	bottom?: ReactNode;
+	/** Esc на сцене; без обработчика клавиша не перехватывается. */
+	onEscape?: () => void;
 	celebration: { seq: number } | null;
 }) {
 	const { t } = useTranslation();
@@ -134,6 +142,8 @@ export function SkinStage({
 	const [hidden, setHidden] = useState(() => document.hidden);
 	const [flat, setFlat] = useState(false);
 	const [side, setSide] = useState<"front" | "back">("front");
+	/** «Вернуть вид» видна, только когда вид меняли. */
+	const [viewChanged, setViewChanged] = useState(false);
 	const hostRef = useRef<HTMLDivElement>(null);
 	const viewerRef = useRef<SkinViewer | null>(null);
 	const tweenRef = useRef<number | null>(null);
@@ -190,6 +200,8 @@ export function SkinStage({
 		controls.maxDistance = maxDistance;
 		controls.minDistance = MIN_DISTANCE;
 		controls.saveState();
+		// `start` — только от мыши и колеса, не от `reset()`.
+		controls.addEventListener("start", () => setViewChanged(true));
 		controls.addEventListener("change", () => {
 			const closeness = (maxDistance - viewer.camera.position.length()) / (maxDistance - MIN_DISTANCE);
 			viewer.playerWrapper.position.y = -HEAD_HEIGHT * Math.min(1, Math.max(0, closeness));
@@ -367,7 +379,9 @@ export function SkinStage({
 		if (capeTurn === lastCapeTurn.current) return;
 		lastCapeTurn.current = capeTurn;
 		const viewer = viewerRef.current;
-		if (viewer) turnTo(viewer, START_ROTATION + Math.PI);
+		if (!viewer) return;
+		turnTo(viewer, START_ROTATION + Math.PI);
+		setViewChanged(true);
 		// Поворот — только на новый выбор плаща.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [capeTurn]);
@@ -378,9 +392,15 @@ export function SkinStage({
 		viewer.controls.reset();
 		viewer.playerWrapper.position.y = 0;
 		turnTo(viewer, START_ROTATION);
+		setViewChanged(false);
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (event.code === "Escape" && onEscape) {
+			event.preventDefault();
+			onEscape();
+			return;
+		}
 		const viewer = viewerRef.current;
 		if (!viewer || event.ctrlKey || event.altKey || event.metaKey) return;
 		const rotation = viewer.playerWrapper.rotation;
@@ -413,7 +433,9 @@ export function SkinStage({
 			case "Numpad0":
 			case "Home":
 				resetView();
-				break;
+				event.preventDefault();
+				requestRender();
+				return;
 			case "Space":
 				if (reduceMotion) return;
 				setSkinWalking(!walking);
@@ -421,12 +443,13 @@ export function SkinStage({
 			default:
 				return;
 		}
+		if (event.code !== "Space") setViewChanged(true);
 		event.preventDefault();
 		requestRender();
 	};
 
 	return (
-		<div className="relative min-h-0 flex-1 overflow-clip select-none">
+		<div className="relative min-h-[280px] flex-1 overflow-clip rounded-2xl select-none">
 			<PixelLayer
 				src={stageDay}
 				width={440}
@@ -491,7 +514,7 @@ export function SkinStage({
 			)}
 			<span
 				aria-hidden
-				className="pointer-events-none absolute inset-0 ring-ring ring-inset peer-focus-visible:ring-2"
+				className="pointer-events-none absolute inset-0 rounded-2xl ring-ring ring-inset peer-focus-visible:ring-2"
 			/>
 
 			{overlay && <div className="absolute top-3 left-3 max-w-[calc(100%-108px)]">{overlay}</div>}
@@ -511,33 +534,35 @@ export function SkinStage({
 								label={walking ? t("skins.stage.stop") : t("skins.stage.walk")}
 								onClick={() => setSkinWalking(!walking)}
 							>
-								{walking ? <Pause /> : <Play fill="currentColor" />}
+								{walking ? <Pause /> : <Footprints />}
 							</StageButton>
 						)}
-						<StageButton label={t("skins.stage.resetView")} onClick={resetView}>
-							<RefreshCw />
-						</StageButton>
+						{viewChanged && (
+							<StageButton label={t("skins.stage.resetView")} onClick={resetView}>
+								<RotateCcw />
+							</StageButton>
+						)}
 					</>
 				)}
 			</div>
 
 			{flat && (
-				<p className="pointer-events-none absolute inset-x-3 bottom-12 rounded-md bg-cover-scrim/70 px-2.5 py-1.5 text-center text-[13px]/[18px] text-on-cover">
+				<p className="pointer-events-none absolute inset-x-3 bottom-14 rounded-md bg-cover-scrim/70 px-2.5 py-1.5 text-center text-[13px]/[18px] text-on-cover">
 					{t("skins.stage.noWebgl")}
 				</p>
 			)}
-			<div className="pointer-events-none absolute bottom-3 left-[round(down,50%,1px)] flex max-w-[calc(100%-24px)] translate-x-[round(down,-50%,1px)] flex-col items-center gap-1.5">
-				<p
-					aria-live="polite"
-					className={cn(
-						"max-w-full truncate rounded-md bg-cover-scrim/70 px-2.5 py-1 text-[13px]/[18px] font-semibold whitespace-nowrap text-on-cover",
-						!caption && "hidden",
-					)}
-				>
-					{caption}
-				</p>
-				{captionAction && <div className="pointer-events-auto">{captionAction}</div>}
-			</div>
+			{center && (
+				<div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
+					<div className="pointer-events-auto flex max-w-full flex-col items-center gap-2">
+						{center}
+					</div>
+				</div>
+			)}
+			{bottom && (
+				<div className="absolute bottom-3 left-[round(down,50%,1px)] max-w-[calc(100%-24px)] translate-x-[round(down,-50%,1px)]">
+					{bottom}
+				</div>
+			)}
 		</div>
 	);
 }

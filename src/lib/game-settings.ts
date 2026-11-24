@@ -70,6 +70,16 @@ async function load<K extends keyof Loadables>(
 	}
 }
 
+/** Мажорные версии Java со своей строкой в Настройках → «Игра». */
+export const JAVA_MAJORS = [25, 21, 17, 8] as const;
+export type JavaMajor = (typeof JAVA_MAJORS)[number];
+
+export const SETTINGS_JAVA_ROWS_ID = "settings-java";
+
+export function settingsJavaFieldId(major: JavaMajor) {
+	return `settings-java-${major}`;
+}
+
 export function initGameSettings() {
 	void load("settings", settingsApi.get);
 	void load("memory", settingsApi.systemMemory);

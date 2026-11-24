@@ -14,7 +14,9 @@ use crate::fs_util;
 use crate::java::{self, JavaInstall};
 use crate::launcher::Launcher;
 use crate::meta::model::{AssetIndex, VersionInfo};
-use crate::meta::rules::{Platform, library_allowed, maven_path, native_download};
+use crate::meta::rules::{
+	Platform, library_allowed, maven_path, native_download, required_java_arch,
+};
 use crate::meta::{Resolved, check_version_info, unsafe_meta};
 use crate::paths::Layout;
 
@@ -186,11 +188,13 @@ impl Reporter {
 }
 
 /// Java для версии игры: своя у сборки → выбранная в настройках для этой версии → найденная → скачанная.
+/// `arch` — нужная разрядность (x64 для старых версий на arm64), иначе родная.
 pub async fn resolve_java(
 	l: &Launcher,
 	own: Option<&str>,
 	major: u32,
 	component: Option<&str>,
+	arch: Option<&str>,
 	progress: Arc<Progress>,
 	cancel: &CancellationToken,
 ) -> Result<JavaInstall, AppError> {
@@ -200,6 +204,7 @@ pub async fn resolve_java(
 		own,
 		configured.as_deref(),
 		major,
+		arch,
 		&managed_root,
 		&l.java_found,
 	)
@@ -213,6 +218,8 @@ pub async fn resolve_java(
 		}
 		return Ok(found);
 	}
+	let arch = arch.unwrap_or(Platform::current().arch);
+	java::ensure_runnable_arch(arch)?;
 	let _guard = tokio::select! {
 		_ = cancel.cancelled() => return Err(AppError::new(ErrorCode::Cancelled)),
 		g = l.java_lock.lock() => g,
@@ -224,6 +231,7 @@ pub async fn resolve_java(
 		&managed_root,
 		component,
 		major,
+		arch,
 		progress,
 		cancel,
 		&in_use,
@@ -270,6 +278,7 @@ async fn update_java(
 		&managed_root,
 		Some(&marker.component),
 		found.major,
+		marker.arch(),
 		progress,
 		cancel,
 		&in_use,
@@ -552,6 +561,7 @@ pub async fn install_files(
 	let info = &resolved.info;
 	let major = info.java_major();
 	let component = info.java_version.as_ref().and_then(|j| j.component.clone());
+	let arch = required_java_arch(&info.libraries, Platform::current());
 
 	let java_progress = reporter.stage(InstallStage::Java, 3.0, 15.0);
 	let java = resolve_java(
@@ -559,10 +569,12 @@ pub async fn install_files(
 		instance.java_path.as_deref(),
 		major,
 		component.as_deref(),
+		arch,
 		java_progress,
 		cancel,
 	)
 	.await?;
+	java::ensure_runnable_arch(&java.arch)?;
 	let platform = Platform::with_arch(&java.arch);
 
 	let has_processors = info.processors.as_ref().is_some_and(|p| !p.is_empty());

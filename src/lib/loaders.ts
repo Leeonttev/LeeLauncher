@@ -25,6 +25,9 @@ function parseRelease(id: string): number[] | null {
 
 /** Снапшоты и непонятные id — `null`: точный номер знает ядро после установки. */
 export function javaMajorFor(gameVersion: string): number | null {
+	// Номера с годом (26.1 и новее) идут на Java 25.
+	const year = /^(\d{2})\.\d+(?:\.\d+)?$/.exec(gameVersion);
+	if (year && Number(year[1]) >= 26) return 25;
 	const release = parseRelease(gameVersion);
 	if (!release) return null;
 	const [minor, patch] = release;

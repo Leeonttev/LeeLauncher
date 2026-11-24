@@ -207,3 +207,148 @@ async fn live_launch_forge() {
 	let forge = install(&l, "Forge", "1.20.1", LoaderKind::Forge, Some("47.4.0")).await;
 	run_game(&l, &forge, &["Setting user: LeeTest", "Forge mod loading"]).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "качает ~1,5 ГБ и открывает окно игры"]
+async fn live_launch_modern() {
+	let (root, _guard) = root();
+	println!("папка: {}", root.display());
+	let l = Launcher::new(Layout::new(root)).unwrap();
+
+	let vanilla = install(&l, "Vanilla 1.21", "1.21.4", LoaderKind::Vanilla, None).await;
+	run_game(&l, &vanilla, &["Setting user: LeeTest", "LWJGL"]).await;
+
+	let fabric = install(&l, "Fabric 1.21", "1.21.4", LoaderKind::Fabric, None).await;
+	run_game(&l, &fabric, &["Loading Minecraft", "Setting user: LeeTest"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "качает ~500 МБ и открывает окно игры"]
+async fn live_launch_old() {
+	let (root, _guard) = root();
+	let l = Launcher::new(Layout::new(root)).unwrap();
+	// LWJGL 3.2 без natives для arm64: на Apple Silicon — x64-Java через Rosetta.
+	let old = install(&l, "Old", "1.16.5", LoaderKind::Vanilla, None).await;
+	run_game(&l, &old, &["Setting user: LeeTest", "LWJGL"]).await;
+}
+
+/// Сборка с описанием «как до исправления»: отмечается установленной без скачивания файлов.
+async fn fake_installed(l: &Arc<Launcher>, game: &str, kind: LoaderKind) -> Option<Instance> {
+	let cancel = tokio_util::sync::CancellationToken::new();
+	let resolved = match l.meta.resolve(game, kind, None, false, &cancel).await {
+		Ok(r) => r,
+		Err(err) => {
+			println!("== {game} {}: пропуск ({err:?})", kind.as_str());
+			return None;
+		}
+	};
+	let instance = l
+		.instances
+		.create(
+			&format!("{game} {}", kind.as_str()),
+			game,
+			crate::instances::Loader {
+				kind,
+				version: resolved.loader_version.clone(),
+			},
+			None,
+			None,
+		)
+		.await
+		.unwrap();
+	Some(
+		l.instances
+			.modify(&instance.id, |i| {
+				i.install_state = crate::instances::InstallState::Installed;
+				i.installed = Some(crate::instances::Installed {
+					version_id: resolved.version_id.clone(),
+					java_major: resolved.info.java_major(),
+				});
+				Ok(())
+			})
+			.await
+			.unwrap(),
+	)
+}
+
+/// Подменяет в описании `3.4.3-mojang-2.15.0` на уязвимую `3.4.3`. `false` — подменять нечего.
+fn make_old(path: &std::path::Path) -> bool {
+	let text = std::fs::read_to_string(path).unwrap();
+	if !text.contains("lwjgl-freetype") || !text.contains("3.4.3-mojang-2.15.0") {
+		return false;
+	}
+	std::fs::write(path, text.replace("3.4.3-mojang-2.15.0", "3.4.3")).unwrap();
+	true
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "сеть: описания версий и библиотеки 26.3"]
+async fn live_fresh_freetype() {
+	let (root, _guard) = root();
+	println!("папка: {}", root.display());
+	let l = Launcher::new(Layout::new(root)).unwrap();
+	let cancel = tokio_util::sync::CancellationToken::new();
+
+	let old = fake_installed(&l, "1.21.4", LoaderKind::Vanilla)
+		.await
+		.unwrap();
+	let old = l.instances.get(&old.id).await.unwrap();
+	println!("== 1.21.4: fontVulnerable {}", old.font_vulnerable);
+	assert!(old.font_vulnerable);
+
+	let mut fixed = Vec::new();
+	for kind in [LoaderKind::Vanilla, LoaderKind::Fabric] {
+		let Some(instance) = fake_installed(&l, "26.3", kind).await else {
+			assert_ne!(kind, LoaderKind::Vanilla);
+			continue;
+		};
+		let version_id = instance.installed.clone().unwrap().version_id;
+		assert!(!l.instances.get(&instance.id).await.unwrap().font_vulnerable);
+		assert!(make_old(&l.layout.version_json(&version_id)));
+		if kind != LoaderKind::Vanilla {
+			make_old(&l.layout.version_json("26.3"));
+		}
+		let now = l.instances.get(&instance.id).await.unwrap();
+		println!(
+			"== {version_id}: подменено, fontVulnerable {}",
+			now.font_vulnerable
+		);
+		assert!(now.font_vulnerable);
+		fixed.push((instance.id, version_id));
+	}
+	assert!(make_old(&l.layout.version_json("26.3")) || fixed.len() > 1);
+
+	assert!(crate::instances::fresh::refresh_installed(&l).await);
+	for (id, version_id) in &fixed {
+		let after = l.instances.get(id).await.unwrap();
+		let text = std::fs::read_to_string(l.layout.version_json(version_id)).unwrap();
+		println!(
+			"== {version_id}: после обновления fontVulnerable {}",
+			after.font_vulnerable
+		);
+		assert!(!after.font_vulnerable);
+		assert!(text.contains("lwjgl-freetype:3.4.3-mojang-2.15.0"));
+
+		// Запуск докачивает новые библиотеки.
+		let info: crate::meta::model::VersionInfo =
+			serde_json::from_slice(text.as_bytes()).unwrap();
+		let platform = crate::meta::rules::Platform::current();
+		super::fetch_missing_libraries(&l, &info, version_id, platform, &cancel)
+			.await
+			.unwrap();
+		let (jobs, _) =
+			crate::instances::install::library_jobs(&info, &l.layout, platform).unwrap();
+		assert!(jobs.iter().all(|j| j.path.is_file()));
+		let freetype: Vec<_> = jobs
+			.iter()
+			.filter(|j| j.path.to_string_lossy().contains("lwjgl-freetype"))
+			.map(|j| j.path.display().to_string())
+			.collect();
+		println!("   {freetype:#?}");
+		assert!(!freetype.is_empty());
+		assert!(freetype.iter().all(|p| p.contains("3.4.3-mojang-2.15.0")));
+	}
+	// Второй раз менять нечего.
+	assert!(!crate::instances::fresh::refresh_installed(&l).await);
+	assert!(l.instances.get(&old.id).await.unwrap().font_vulnerable);
+}

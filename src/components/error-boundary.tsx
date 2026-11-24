@@ -7,6 +7,8 @@ import { ErrorDetails } from "@/components/error-details";
 import { WindowButton, WindowGlyph } from "@/components/layout/window-controls";
 import { Button } from "@/components/ui/button";
 import { appWindow } from "@/lib/api";
+import { isMac } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 import { en } from "@/locales/en";
 import { ru, type Dictionary } from "@/locales/ru";
 
@@ -78,24 +80,32 @@ function RootFallback() {
 			>
 				<span
 					data-tauri-drag-region
-					className="flex h-full items-center pl-5 text-foreground [&>*]:pointer-events-none"
+					className={cn(
+						"flex h-full items-center text-foreground [&>*]:pointer-events-none",
+						// pl-[92px] = MAC_TRAFFIC_LIGHTS: место под системные кнопки окна.
+						isMac ? "pl-[92px]" : "pl-5",
+					)}
 				>
 					<Spark accent size={22} />
 				</span>
 				<div data-tauri-drag-region className="h-full flex-1" />
-				<WindowButton
-					label={dict.window.minimize}
-					onClick={() => void appWindow.minimize().catch(() => {})}
-				>
-					<WindowGlyph name="minimize" />
-				</WindowButton>
-				<WindowButton
-					label={dict.window.close}
-					danger
-					onClick={() => void appWindow.close().catch(() => {})}
-				>
-					<WindowGlyph name="close" />
-				</WindowButton>
+				{!isMac && (
+					<>
+						<WindowButton
+							label={dict.window.minimize}
+							onClick={() => void appWindow.minimize().catch(() => {})}
+						>
+							<WindowGlyph name="minimize" />
+						</WindowButton>
+						<WindowButton
+							label={dict.window.close}
+							danger
+							onClick={() => void appWindow.close().catch(() => {})}
+						>
+							<WindowGlyph name="close" />
+						</WindowButton>
+					</>
+				)}
 			</header>
 			<div className="flex min-h-0 flex-1 flex-col">
 				<ErrorMessage text={dict.errorBoundary} />

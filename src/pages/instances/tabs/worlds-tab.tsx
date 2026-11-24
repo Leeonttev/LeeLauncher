@@ -42,6 +42,7 @@ import { i18n } from "@/lib/i18n";
 import { launchInstance, openInstanceFolder, statusOf, useInstances } from "@/lib/instances";
 import { cn } from "@/lib/utils";
 import { loadWorlds, removeWorld, useWorlds } from "@/lib/worlds";
+import { isDeleteKey } from "@/lib/platform";
 
 const SEARCH_FROM = 6;
 
@@ -181,7 +182,7 @@ function WorldRow({
 		<div
 			className="relative -mx-3 flex h-16 items-center gap-4 rounded-lg px-3 transition-colors duration-(--duration-base) ease-out hover:bg-accent"
 			onKeyDown={(event) => {
-				if (event.key !== "Delete" || running) return;
+				if (!isDeleteKey(event) || running) return;
 				if ((event.target as HTMLElement).closest("[role=menu]")) return;
 				event.preventDefault();
 				onRemove(world);

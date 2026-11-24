@@ -180,11 +180,32 @@ fn show_icon<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 				show(tray.app_handle());
 			}
 		});
+	#[cfg(target_os = "macos")]
+	{
+		// В строке меню — монохромный шаблон: macOS сама красит его под тему и выделение.
+		builder = builder.icon(menu_bar_icon()?).icon_as_template(true);
+	}
+	#[cfg(not(target_os = "macos"))]
 	if let Some(icon) = app.default_window_icon() {
 		builder = builder.icon(icon.clone());
 	}
 	builder.build(app)?;
 	Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn menu_bar_icon() -> tauri::Result<tauri::image::Image<'static>> {
+	// 36 px: macOS приводит значок к высоте 18 pt, на Retina это 1:1.
+	let png = include_bytes!("../icons/tray-template@2x.png");
+	let rgba = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+		.map_err(|err| tauri::Error::InvalidIcon(std::io::Error::other(err)))?
+		.into_rgba8();
+	let (width, height) = rgba.dimensions();
+	Ok(tauri::image::Image::new_owned(
+		rgba.into_raw(),
+		width,
+		height,
+	))
 }
 
 fn remove_icon<R: Runtime>(app: &AppHandle<R>) {
@@ -206,7 +227,7 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) {
 	}
 }
 
-/// «Выйти» из трея. Идут игры — показываем окно: интерфейс спросит, закрыть ли их.
+/// «Выйти» из трея или Cmd+Q. Идут игры — показываем окно: интерфейс спросит, закрыть ли их.
 fn quit<R: Runtime>(app: &AppHandle<R>) {
 	let games = app
 		.try_state::<Arc<Launcher>>()
@@ -310,6 +331,10 @@ fn try_exit<R: Runtime>(app: &AppHandle<R>) {
 
 /// Сменился язык интерфейса: переписать меню и подсказку, если значок уже есть.
 pub fn relabel<R: Runtime>(app: &AppHandle<R>) {
+	#[cfg(target_os = "macos")]
+	if let Err(err) = app_menu::build(app).and_then(|m| app.set_menu(m).map(|_| ())) {
+		log::warn!("меню приложения: не удалось сменить язык: {err}");
+	}
 	let Some(tray) = app.tray_by_id(TRAY_ID) else {
 		return;
 	};
@@ -320,5 +345,151 @@ pub fn relabel<R: Runtime>(app: &AppHandle<R>) {
 	});
 	if let Err(err) = result {
 		log::warn!("трей: не удалось сменить язык: {err}");
+	}
+}
+
+#[cfg(target_os = "macos")]
+mod app_menu {
+	use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+	use tauri::{AppHandle, Runtime};
+
+	use crate::lang::{self, Lang};
+
+	/// Свой пункт вместо системного «Завершить»: тот закрывает приложение без вопросов,
+	/// даже во время игры.
+	pub const QUIT: &str = "app-quit";
+
+	struct Texts {
+		about: &'static str,
+		services: &'static str,
+		hide: &'static str,
+		hide_others: &'static str,
+		show_all: &'static str,
+		quit: &'static str,
+		edit: &'static str,
+		undo: &'static str,
+		redo: &'static str,
+		cut: &'static str,
+		copy: &'static str,
+		paste: &'static str,
+		select_all: &'static str,
+		window: &'static str,
+		minimize: &'static str,
+		zoom: &'static str,
+		fullscreen: &'static str,
+		close: &'static str,
+	}
+
+	fn texts(lang: Lang) -> Texts {
+		match lang {
+			Lang::Ru => Texts {
+				about: "О программе LeeLauncher",
+				services: "Службы",
+				hide: "Скрыть LeeLauncher",
+				hide_others: "Скрыть остальные",
+				show_all: "Показать все",
+				quit: "Завершить LeeLauncher",
+				edit: "Правка",
+				undo: "Отменить",
+				redo: "Повторить",
+				cut: "Вырезать",
+				copy: "Копировать",
+				paste: "Вставить",
+				select_all: "Выбрать все",
+				window: "Окно",
+				minimize: "Свернуть",
+				zoom: "Изменить масштаб",
+				fullscreen: "Перейти в полноэкранный режим",
+				close: "Закрыть окно",
+			},
+			Lang::En => Texts {
+				about: "About LeeLauncher",
+				services: "Services",
+				hide: "Hide LeeLauncher",
+				hide_others: "Hide Others",
+				show_all: "Show All",
+				quit: "Quit LeeLauncher",
+				edit: "Edit",
+				undo: "Undo",
+				redo: "Redo",
+				cut: "Cut",
+				copy: "Copy",
+				paste: "Paste",
+				select_all: "Select All",
+				window: "Window",
+				minimize: "Minimize",
+				zoom: "Zoom",
+				fullscreen: "Enter Full Screen",
+				close: "Close Window",
+			},
+		}
+	}
+
+	pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+		let t = texts(lang::ui());
+		let info = app.package_info();
+		let about = AboutMetadata {
+			name: Some(info.name.clone()),
+			version: Some(info.version.to_string()),
+			copyright: app.config().bundle.copyright.clone(),
+			..Default::default()
+		};
+		let sep = || PredefinedMenuItem::separator(app);
+		let main = Submenu::with_items(
+			app,
+			&info.name,
+			true,
+			&[
+				&PredefinedMenuItem::about(app, Some(t.about), Some(about))?,
+				&sep()?,
+				&PredefinedMenuItem::services(app, Some(t.services))?,
+				&sep()?,
+				&PredefinedMenuItem::hide(app, Some(t.hide))?,
+				&PredefinedMenuItem::hide_others(app, Some(t.hide_others))?,
+				&PredefinedMenuItem::show_all(app, Some(t.show_all))?,
+				&sep()?,
+				&MenuItem::with_id(app, QUIT, t.quit, true, Some("CmdOrCtrl+Q"))?,
+			],
+		)?;
+		let edit = Submenu::with_items(
+			app,
+			t.edit,
+			true,
+			&[
+				&PredefinedMenuItem::undo(app, Some(t.undo))?,
+				&PredefinedMenuItem::redo(app, Some(t.redo))?,
+				&sep()?,
+				&PredefinedMenuItem::cut(app, Some(t.cut))?,
+				&PredefinedMenuItem::copy(app, Some(t.copy))?,
+				&PredefinedMenuItem::paste(app, Some(t.paste))?,
+				&PredefinedMenuItem::select_all(app, Some(t.select_all))?,
+			],
+		)?;
+		let window = Submenu::with_items(
+			app,
+			t.window,
+			true,
+			&[
+				&PredefinedMenuItem::minimize(app, Some(t.minimize))?,
+				&PredefinedMenuItem::maximize(app, Some(t.zoom))?,
+				&PredefinedMenuItem::fullscreen(app, Some(t.fullscreen))?,
+				&sep()?,
+				&PredefinedMenuItem::close_window(app, Some(t.close))?,
+			],
+		)?;
+		Menu::with_items(app, &[&main, &edit, &window])
+	}
+}
+
+/// Меню приложения macOS на языке интерфейса.
+#[cfg(target_os = "macos")]
+pub fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+	app_menu::build(app)
+}
+
+#[cfg(target_os = "macos")]
+pub fn on_app_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
+	if id == app_menu::QUIT {
+		quit(app);
 	}
 }

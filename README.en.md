@@ -48,6 +48,8 @@
 
 ## Installation
 
+### Windows
+
 1. Open the [latest release](https://github.com/leeonttev/LeeLauncher/releases/latest) and download `LeeLauncher-Setup-….exe`.
 2. Run it. No administrator rights needed: the launcher installs for your user only.
 
@@ -55,9 +57,22 @@
 
 The launcher needs WebView2, the Windows component that draws the interface. Windows 11 already has it; if it’s missing, the installer downloads and installs it for you.
 
+### macOS
+
+1. Open the [latest release](https://github.com/leeonttev/LeeLauncher/releases/latest) and download `LeeLauncher-…-macos.dmg`. One file works on both Apple Silicon and Intel.
+2. Open it and drag LeeLauncher into the Applications folder.
+
+**“Developer cannot be verified” or “Apple could not verify LeeLauncher”.** The launcher isn’t signed with a paid Apple certificate, so macOS won’t open it the first time. Open it once like this:
+
+- in Applications, right-click LeeLauncher, choose **Open** and confirm with **Open**;
+- if there’s no such button (macOS 15 and later), close the warning, go to **System Settings → Privacy & Security**, click **Open Anyway** next to the message about LeeLauncher at the bottom and confirm with your password.
+
+After that the launcher opens as usual and installs updates by itself.
+
 ## System requirements
 
 - Windows 10 or 11, 64-bit
+- macOS 13.3 Ventura or later, Apple Silicon or Intel
 - An internet connection the first time you launch an instance: the game, the loader and Java are downloaded once
 
 ## License

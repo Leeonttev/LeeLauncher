@@ -71,6 +71,7 @@ import { formatList, formatNumber } from "@/lib/format";
 import { useInstances } from "@/lib/instances";
 import { pickModpackFile, useModpackFileShortcut } from "@/lib/modpacks";
 import { cn } from "@/lib/utils";
+import { ariaShortcut, isPrimaryMod, noModifiers } from "@/lib/platform";
 
 const TYPE_ICONS: Record<CatalogType, LucideIcon> = {
 	mod: Puzzle,
@@ -135,11 +136,10 @@ export function CatalogPage() {
 
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
-			const ctrlF = event.code === "KeyF" && event.ctrlKey && !event.altKey && !event.shiftKey;
+			const ctrlF = event.code === "KeyF" && isPrimaryMod(event);
 			const slash =
 				(event.code === "Slash" || event.code === "NumpadDivide") &&
-				!event.ctrlKey &&
-				!event.altKey &&
+				noModifiers(event) &&
 				!event.shiftKey;
 			if (!ctrlF && !slash) return;
 			if (typingTarget(event.target) || overlayOpen()) return;
@@ -179,7 +179,7 @@ export function CatalogPage() {
 							{modpacks ? (
 								<Button
 									variant="outline"
-									aria-keyshortcuts="Control+O"
+									aria-keyshortcuts={ariaShortcut("O")}
 									onClick={(e) => void pickModpackFile(e.currentTarget)}
 								>
 									<FolderOpen />
@@ -223,7 +223,7 @@ export function CatalogPage() {
 								value={state.query}
 								placeholder={t(`catalog.search.${state.type}`)}
 								aria-label={t(`catalog.search.${state.type}`)}
-								aria-keyshortcuts="Control+F /"
+								aria-keyshortcuts={`${ariaShortcut("F")} /`}
 								spellCheck={false}
 								autoComplete="off"
 								className="h-9 min-w-0 flex-1"

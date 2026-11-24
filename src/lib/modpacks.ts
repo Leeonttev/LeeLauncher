@@ -21,6 +21,7 @@ import { compareGameVersions, LOADER_NAMES } from "@/lib/loaders";
 import { loadManual, openManualDialog } from "@/lib/manual";
 import { instancePath, navigate } from "@/lib/router";
 import { readStorage, writeStorage } from "@/lib/storage";
+import { isPrimaryMod } from "@/lib/platform";
 
 export type ModpackRef = { source: ContentSource; id: string; title: string; iconUrl: string | null };
 
@@ -513,8 +514,7 @@ export function useModpackFileShortcut(enabled: boolean) {
 	useEffect(() => {
 		if (!enabled) return;
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.code !== "KeyO" || !event.ctrlKey || event.altKey || event.shiftKey || event.metaKey)
-				return;
+			if (event.code !== "KeyO" || !isPrimaryMod(event)) return;
 			if (event.repeat || typingTarget(event.target) || overlayOpen()) return;
 			event.preventDefault();
 			void pickModpackFile();

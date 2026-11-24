@@ -592,7 +592,8 @@ mod tests {
 
 	fn no_refresh(
 		_: String,
-	) -> std::future::Ready<Result<(MsSecret, Option<microsoft::MinecraftProfile>), AuthError>> {
+	) -> std::future::Ready<Result<(MsSecret, Option<microsoft::MinecraftProfile>), AuthError>>
+	{
 		panic!("обновление здесь не нужно")
 	}
 

@@ -1,22 +1,33 @@
-import { FolderOpen, LoaderCircle, OctagonX, Plus, RotateCcw, Search, Shirt, X } from "lucide-react";
+import {
+	FolderOpen,
+	History,
+	LoaderCircle,
+	OctagonX,
+	Plus,
+	RotateCcw,
+	RotateCw,
+	Search,
+	Shirt,
+	Undo2,
+	X,
+} from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { RadioGroup as RadioGroupPrimitive } from "radix-ui";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { AccountAvatar } from "@/components/accounts/account-avatar";
-import { useAccountStatus } from "@/components/accounts/use-account-status";
 import { CenteredState } from "@/components/centered-state";
 import { ErrorDetails } from "@/components/error-details";
+import { onCoverButton } from "@/components/instances/play-button";
 import { ScrollContainerContext, useScrollContainer } from "@/components/layout/scroll-container";
 import { PixelGrid } from "@/components/pixel-grid";
 import { SearchField } from "@/components/search-field";
 import { Segments } from "@/components/segments";
-import { CapeFlat } from "@/components/skins/skin-flat";
 import { SkinCard } from "@/components/skins/skin-card";
+import { CapeFlat } from "@/components/skins/skin-flat";
 import { SkinStage } from "@/components/skins/skin-stage";
 import { SkinCardSkeleton } from "@/components/skins/skins-skeleton";
 import { Button } from "@/components/ui/button";
-import { onCoverButton } from "@/components/instances/play-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -25,41 +36,74 @@ import { useDelayedFlag } from "@/hooks/use-delayed-flag";
 import { activeAccount, openAddAccountDialog, openReloginDialog, useAccounts } from "@/lib/accounts";
 import type { Account, SkinEntry, SkinModel } from "@/lib/api";
 import { errorText } from "@/lib/errors";
+import { ariaShortcut, isPrimaryMod, noModifiers } from "@/lib/platform";
 import {
+	inAccountHistory,
+	isHistorySkin,
 	loadProfile,
 	loadSkinLibrary,
-	openTakeOffDialog,
 	pickSkinFiles,
 	refreshSkins,
 	revertDraft,
-	saveCurrentSkin,
 	SEARCH_FROM,
 	setDraftCape,
 	setDraftModel,
+	setSkinsFilter,
 	setSkinsPageAccount,
 	setSkinsQuery,
+	skinDisplayName,
+	skinRecency,
 	stageView,
 	tryOnSkin,
 	useSkins,
 	waitTimeText,
 	wearDraft,
-	type StageView,
+	wearSkin,
+	type SkinFilter,
 	type SkinsStore,
+	type StageView,
 } from "@/lib/skins";
 import { cn } from "@/lib/utils";
 
 const COLUMN = 152;
 const GAP = 12;
-/** Рамка, картинка 128, две строки текста. */
-const ROW_HEIGHT = 204 + GAP;
+/** Высота карточки и зазор. */
+const ROW_HEIGHT = 216 + GAP;
 const VIRTUAL_FROM = 200;
-const CASCADE_LIMIT = 12;
-const CASCADE_STEP = 0.02;
 const SKELETONS = 12;
+/** Уже — «Добавить файл» только иконкой. */
+const NARROW_LIBRARY = 600;
 /** У `SelectItem` не может быть пустого значения. */
 const NO_CAPE = "none";
+const HINT_ID = "skins-main-hint";
+
+/** Состояние аккаунта для подиума, кнопки и карточек. */
+type Ctx = {
+	store: SkinsStore;
+	account: Account | null;
+	needsRelogin: boolean;
+	view: StageView;
+};
+
+/** Пока идёт первый запрос профиля, менять и снимать скин рано. */
+function isFirstProfileLoad(store: SkinsStore, accountId: string) {
+	const state = store.profiles[accountId];
+	return !state || state.status === "loading";
+}
+
+/** Надеть с карточки можно, только когда ничего не мешает и главной кнопке. */
+function wearableAccount({ store, account, needsRelogin }: Ctx): Account | null {
+	if (!account || needsRelogin) return null;
+	if (store.applying[account.id] || store.resetting[account.id] || store.waits[account.id]) return null;
+	return isFirstProfileLoad(store, account.id) ? null : account;
+}
+
+function focusMainButton() {
+	document.querySelector<HTMLElement>("[data-skin-main]")?.focus();
+}
 
 export function SkinsPage() {
+	const { t } = useTranslation();
 	const store = useSkins();
 	const accounts = useAccounts();
 	const account = activeAccount(accounts);
@@ -71,19 +115,18 @@ export function SkinsPage() {
 
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
-			const plainCtrl = event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey;
-			const ctrlF = event.code === "KeyF" && plainCtrl;
-			const ctrlO = event.code === "KeyO" && plainCtrl;
+			const primary = isPrimaryMod(event);
+			const find = event.code === "KeyF" && primary;
+			const open = event.code === "KeyO" && primary;
 			const slash =
 				(event.code === "Slash" || event.code === "NumpadDivide") &&
-				!event.ctrlKey &&
-				!event.altKey &&
+				noModifiers(event) &&
 				!event.shiftKey;
-			if (!ctrlF && !ctrlO && !slash) return;
-			// Иначе Ctrl+F и Ctrl+O откроет сам WebView2.
-			if (ctrlF || ctrlO) event.preventDefault();
+			if (!find && !open && !slash) return;
+			// Иначе Ctrl+F и Ctrl+O перехватит сам WebView.
+			if (find || open) event.preventDefault();
 			if (overlayOpen() || event.repeat) return;
-			if (ctrlO) {
+			if (open) {
 				void pickSkinFiles();
 				return;
 			}
@@ -99,6 +142,7 @@ export function SkinsPage() {
 	const accountId = account?.id ?? null;
 	const view = stageView(store, accountId);
 	const needsRelogin = Boolean(account && (account.needsRelogin || store.relogin[account.id]));
+	const ctx: Ctx = { store, account, needsRelogin, view };
 
 	// Профиль — при входе на страницу и смене аккаунта. Частоту запросов бережёт ядро.
 	useEffect(() => {
@@ -108,78 +152,112 @@ export function SkinsPage() {
 	}, [accountId, needsRelogin]);
 
 	return (
-		<div className="@container/skins flex min-h-0 flex-1">
-			<div className="flex w-85 shrink-0 flex-col border-r @min-[1100px]/skins:w-100">
-				<Podium store={store} account={account} needsRelogin={needsRelogin} view={view} />
-				<Panel store={store} account={account} needsRelogin={needsRelogin} view={view} />
+		<div className="@container/skins flex min-h-0 flex-1 gap-8 px-8 py-6">
+			<h1 className="sr-only">{t("skins.title")}</h1>
+			<div className="flex min-h-0 w-80 shrink-0 flex-col gap-4 @min-[1280px]/skins:w-[380px]">
+				<Podium ctx={ctx} />
+				<Controls ctx={ctx} />
 			</div>
-			<Library store={store} account={account} view={view} searchRef={searchRef} />
+			<Library ctx={ctx} searchRef={searchRef} />
 		</div>
 	);
 }
 
-function useStageCaption(
-	store: SkinsStore,
-	account: Account | null,
-	needsRelogin: boolean,
-	view: StageView,
-): { caption: string | null; retry: boolean } {
-	const { t } = useTranslation();
-	if (view.trying) return { caption: t("skins.stage.trying"), retry: false };
-	if (!account) return { caption: null, retry: false };
-	const { current } = view;
-	const worn = current?.isDefault ? t("skins.stage.wornDefault") : t("skins.stage.worn");
-	if (needsRelogin) return { caption: current?.texture ? worn : null, retry: false };
-	const state = store.profiles[account.id];
-	const error = state?.error ?? null;
-	const offline = error?.code === "network";
-	if (state?.status === "error" || !state) {
-		if (state && current?.texture)
-			return {
-				caption: offline ? t("skins.stage.staleOffline") : t("skins.stage.staleError"),
-				retry: true,
-			};
-		if (state)
-			return {
-				caption: offline ? t("skins.stage.noProfileOffline") : t("skins.stage.noProfile"),
-				retry: true,
-			};
-		return { caption: current?.texture ? worn : t("skins.stage.loading"), retry: false };
-	}
-	if (state.status === "loading")
-		return { caption: current?.texture ? worn : t("skins.stage.loading"), retry: false };
-	if (!current?.texture) return { caption: t("skins.stage.noProfile"), retry: true };
-	if (error)
-		return {
-			caption: offline ? t("skins.stage.staleOffline") : t("skins.stage.staleError"),
-			retry: true,
-		};
-	return { caption: worn, retry: false };
-}
-
-/** Пока идёт первый запрос профиля, менять и снимать скин рано. */
-function isFirstProfileLoad(store: SkinsStore, accountId: string) {
-	const state = store.profiles[accountId];
-	return !state || state.status === "loading";
-}
-
-function Podium({
-	store,
+function RetryOnCover({
 	account,
-	needsRelogin,
-	view,
+	wait,
+	round,
 }: {
-	store: SkinsStore;
-	account: Account | null;
-	needsRelogin: boolean;
-	view: StageView;
+	account: Account;
+	wait: number | undefined;
+	round?: boolean;
 }) {
 	const { t } = useTranslation();
-	const statusOf = useAccountStatus();
-	const { caption, retry } = useStageCaption(store, account, needsRelogin, view);
+	const label = wait ? t("skins.action.wait", { time: waitTimeText(wait) }) : t("common.retry");
+	const retry = () => {
+		if (!wait) void loadProfile(account.id, true);
+	};
+	if (!round)
+		return (
+			<button
+				type="button"
+				aria-disabled={wait ? true : undefined}
+				className={cn(onCoverButton, "h-8 px-3 text-[13px] aria-disabled:opacity-70")}
+				onClick={retry}
+			>
+				<RotateCw />
+				{label}
+			</button>
+		);
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					type="button"
+					aria-label={label}
+					aria-disabled={wait ? true : undefined}
+					className={cn(onCoverButton, "size-8 aria-disabled:opacity-70")}
+					onClick={retry}
+				>
+					<RotateCw />
+				</button>
+			</TooltipTrigger>
+			<TooltipContent>{label}</TooltipContent>
+		</Tooltip>
+	);
+}
+
+function Podium({ ctx }: { ctx: Ctx }) {
+	const { t } = useTranslation();
+	const { store, account, needsRelogin, view } = ctx;
+	const { current, trying } = view;
 	const wait = account ? store.waits[account.id] : undefined;
-	const name = view.entry?.name ?? (view.texture && account ? account.username : null);
+	const applying = account ? Boolean(store.applying[account.id]) : false;
 	const celebration = account && store.celebration?.accountId === account.id ? store.celebration : null;
+	const state = account ? store.profiles[account.id] : undefined;
+	const error = state?.error ?? null;
+	const offline = error?.code === "network";
+	const entryName = view.entry ? skinDisplayName(view.entry, account?.id ?? null) : null;
+	const name = entryName ?? (view.texture && account ? account.username : null);
+
+	let plate: { title: string; subtitle: string; retry: boolean } | null = null;
+	let center: ReactNode = null;
+	if (account) {
+		if (trying) {
+			plate = { title: t("skins.stage.trying"), subtitle: entryName ?? account.username, retry: false };
+		} else if (current?.texture) {
+			const stale = Boolean(error) && !needsRelogin;
+			plate = {
+				title: current.isDefault ? t("skins.stage.wornDefault") : t("skins.stage.worn"),
+				subtitle: stale
+					? offline
+						? t("skins.stage.staleOffline")
+						: t("skins.stage.staleError")
+					: account.username,
+				retry: stale,
+			};
+		} else if (!needsRelogin) {
+			const loading = !state || state.status === "loading";
+			center = loading ? (
+				<p className="flex items-center gap-2 rounded-lg bg-cover-scrim/70 px-3 py-1.5 text-[13px]/[18px] font-semibold text-on-cover">
+					<LoaderCircle className="animate-spin" />
+					{t("skins.stage.loading")}
+				</p>
+			) : (
+				<>
+					<p className="rounded-lg bg-cover-scrim/70 px-3 py-1.5 text-center text-[13px]/[18px] font-semibold text-on-cover">
+						{offline ? t("skins.stage.noProfileOffline") : t("skins.stage.noProfile")}
+					</p>
+					<RetryOnCover account={account} wait={wait} />
+				</>
+			);
+		}
+	}
+
+	const revert = () => {
+		revertDraft();
+		focusMainButton();
+	};
 
 	return (
 		<SkinStage
@@ -187,39 +265,42 @@ function Podium({
 			model={view.model}
 			cape={view.capeTexture}
 			capeTurn={store.capeTurn}
-			caption={caption}
-			captionAction={
-				retry &&
-				account && (
+			ariaLabel={name ? t("skins.stage.aria", { name }) : t("skins.stage.ariaEmpty")}
+			celebration={celebration}
+			onEscape={trying && !applying ? revertDraft : undefined}
+			center={center}
+			bottom={
+				trying &&
+				!applying && (
 					<button
 						type="button"
-						aria-disabled={wait ? true : undefined}
-						className={cn(onCoverButton, "h-7 px-2.5 text-[13px] aria-disabled:opacity-70")}
-						onClick={() => {
-							if (!wait) void loadProfile(account.id, true);
-						}}
+						className={cn(onCoverButton, "h-8 px-3 text-[13px]")}
+						onClick={revert}
 					>
-						{wait ? t("skins.action.wait", { time: waitTimeText(wait) }) : t("common.retry")}
+						<Undo2 />
+						{t("skins.action.revert")}
 					</button>
 				)
 			}
-			ariaLabel={name ? t("skins.stage.aria", { name }) : t("skins.stage.ariaEmpty")}
-			celebration={celebration}
 			overlay={
-				account && (
-					<div
-						title={account.username}
-						className="flex w-fit max-w-full items-center gap-2 rounded-lg bg-cover-scrim/70 py-1.5 pr-2.5 pl-1.5 text-on-cover"
-					>
-						<AccountAvatar account={{ ...account, needsRelogin }} size={24} surface="cover" />
-						<span className="min-w-0">
-							<span className="block truncate text-[13px]/4 font-semibold">
-								{account.username}
+				account &&
+				plate && (
+					<div className="flex items-center gap-1.5">
+						<div
+							title={plate.subtitle}
+							className="flex min-w-0 items-center gap-2 rounded-lg bg-cover-scrim/70 py-1.5 pr-2.5 pl-1.5 text-on-cover"
+						>
+							<AccountAvatar account={{ ...account, needsRelogin }} size={24} surface="cover" />
+							<span aria-live="polite" className="min-w-0">
+								<span className="block truncate text-[13px]/4 font-semibold">
+									{plate.title}
+								</span>
+								<span className="block truncate text-xs/[14px] opacity-80">
+									{plate.subtitle}
+								</span>
 							</span>
-							<span className="block truncate text-xs/[14px] opacity-80">
-								{statusOf({ ...account, needsRelogin })}
-							</span>
-						</span>
+						</div>
+						{plate.retry && <RetryOnCover account={account} wait={wait} round />}
 					</div>
 				)
 			}
@@ -229,10 +310,11 @@ function Podium({
 
 function CapeRow({ view, loading }: { view: StageView; loading: boolean }) {
 	const { t } = useTranslation();
+	const label = <span className="text-[13px]/[18px] font-semibold">{t("skins.cape.label")}</span>;
 	if (loading)
 		return (
 			<div className="flex items-center justify-between gap-3">
-				<span className="text-[13px]/[18px] font-semibold">{t("skins.cape.label")}</span>
+				{label}
 				<Skeleton className="h-8 w-44 rounded-lg" />
 			</div>
 		);
@@ -240,7 +322,7 @@ function CapeRow({ view, loading }: { view: StageView; loading: boolean }) {
 	const selected = view.capes.find((cape) => cape.id === view.capeId);
 	return (
 		<div className="flex items-center justify-between gap-3">
-			<span className="text-[13px]/[18px] font-semibold">{t("skins.cape.label")}</span>
+			{label}
 			<Select
 				value={selected?.id ?? NO_CAPE}
 				onValueChange={(value) => setDraftCape(value === NO_CAPE ? null : value)}
@@ -269,74 +351,17 @@ function CapeRow({ view, loading }: { view: StageView; loading: boolean }) {
 	);
 }
 
-function NotSavedRow({
-	account,
-	takeOffLocked,
-	onSaved,
-}: {
-	account: Account;
-	takeOffLocked: boolean;
-	onSaved: () => void;
-}) {
+/** Одна главная кнопка: не пересоздаётся, меняются текст и `aria-disabled`. */
+function Controls({ ctx }: { ctx: Ctx }) {
 	const { t } = useTranslation();
-	const [saving, setSaving] = useState(false);
-	return (
-		<div className="flex items-center justify-between gap-3">
-			<span className="min-w-0 truncate text-[13px]/[18px] text-muted-foreground">
-				{t("skins.current.notSaved")}
-			</span>
-			<div className="flex shrink-0 items-center gap-1">
-				<Button
-					variant="outline"
-					size="sm"
-					aria-disabled={saving || undefined}
-					onClick={async () => {
-						if (saving) return;
-						setSaving(true);
-						const saved = await saveCurrentSkin(account.id);
-						setSaving(false);
-						if (saved) onSaved();
-					}}
-				>
-					{saving && <LoaderCircle className="animate-spin" />}
-					{t("skins.current.save")}
-				</Button>
-				<Button
-					variant="ghost"
-					size="sm"
-					aria-disabled={takeOffLocked || undefined}
-					className="aria-disabled:cursor-default aria-disabled:opacity-50"
-					onClick={(event) => {
-						if (!takeOffLocked) openTakeOffDialog(account.id, event.currentTarget);
-					}}
-				>
-					{t("skins.current.takeOff")}
-				</Button>
-			</div>
-		</div>
-	);
-}
-
-function Panel({
-	store,
-	account,
-	needsRelogin,
-	view,
-}: {
-	store: SkinsStore;
-	account: Account | null;
-	needsRelogin: boolean;
-	view: StageView;
-}) {
-	const { t } = useTranslation();
+	const { store, account, needsRelogin, view } = ctx;
 	const mainRef = useRef<HTMLButtonElement>(null);
 	const { current, trying } = view;
 	const applying = account ? Boolean(store.applying[account.id]) : false;
 	const resetting = account ? Boolean(store.resetting[account.id]) : false;
 	const wait = account ? store.waits[account.id] : undefined;
 	const profileState = account ? store.profiles[account.id] : undefined;
-	const loading = !current && (!profileState || profileState.status === "loading");
-	// Неизвестно, что на аккаунте и не потеряется ли это при замене.
+	const capesLoading = !current && (!profileState || profileState.status === "loading");
 	const firstLoad = Boolean(account && isFirstProfileLoad(store, account.id));
 	// Рук нет у манекена; обычный скин загружать как свой незачем.
 	const armsLocked = !view.texture || (!view.picked && Boolean(current?.isDefault));
@@ -372,9 +397,10 @@ function Panel({
 			hint = current?.texture ? t("skins.hint.alreadyWorn") : t("skins.hint.pickFirst");
 		}
 	}
+	if (account && store.wornHint === account.id && !trying) hint = t("skins.hint.wornInGame");
 
 	return (
-		<div className="flex shrink-0 flex-col gap-2.5 border-t px-5 pt-3.5 pb-4">
+		<div className="relative flex shrink-0 flex-col gap-3">
 			<div className="flex items-center justify-between gap-3">
 				<span className="text-[13px]/[18px] font-semibold">{t("skins.model.label")}</span>
 				<div aria-disabled={armsLocked || undefined} className={cn(armsLocked && "opacity-50")}>
@@ -391,72 +417,145 @@ function Panel({
 					/>
 				</div>
 			</div>
-			{account && !needsRelogin && <CapeRow view={view} loading={loading} />}
-			{account && current && !current.skinId && !current.isDefault && !trying && (
-				<NotSavedRow
-					account={account}
-					takeOffLocked={firstLoad}
-					onSaved={() => mainRef.current?.focus()}
-				/>
-			)}
-			<div className="mt-0.5 flex gap-2">
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							ref={mainRef}
-							data-skin-main
-							aria-disabled={inactive || undefined}
-							className="h-9 min-w-0 flex-1 aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-primary aria-disabled:active:translate-y-0"
-							onClick={() => run?.()}
-						>
-							{busy && <LoaderCircle className="animate-spin" />}
-							<span className="truncate">{label}</span>
-						</Button>
-					</TooltipTrigger>
-					{hint && <TooltipContent>{hint}</TooltipContent>}
-				</Tooltip>
-				{trying && (
-					<Button
-						variant="outline"
-						className="h-9 w-24"
-						onClick={() => {
-							revertDraft();
-							mainRef.current?.focus();
-						}}
-					>
-						{t("skins.action.revert")}
-					</Button>
-				)}
-			</div>
+			{account && !needsRelogin && <CapeRow view={view} loading={capesLoading} />}
+			<Button
+				ref={mainRef}
+				size="lg"
+				data-skin-main
+				aria-disabled={inactive || undefined}
+				aria-describedby={hint ? HINT_ID : undefined}
+				className="w-full aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-primary aria-disabled:active:scale-100"
+				onClick={() => run?.()}
+			>
+				{busy && <LoaderCircle className="animate-spin" />}
+				<span className="truncate">{label}</span>
+			</Button>
+			{/* Строка лежит в нижнем отступе страницы: иначе сцена прыгала бы по высоте, когда она появляется. */}
+			<p
+				id={HINT_ID}
+				className="absolute inset-x-0 top-full mt-1 truncate text-center text-xs/4 text-muted-foreground"
+			>
+				{hint}
+			</p>
 		</div>
 	);
 }
 
-function Library({
-	store,
-	account,
-	view,
-	searchRef,
-}: {
-	store: SkinsStore;
-	account: Account | null;
-	view: StageView;
-	searchRef: RefObject<HTMLInputElement | null>;
-}) {
+/** Надетый — первым, дальше новые сверху: по «последний раз видели» или дате добавления. */
+function sortedSkins(items: SkinEntry[], wornId: string | null | undefined) {
+	return items
+		.map((skin, index) => ({ skin, index, recency: skinRecency(skin) }))
+		.sort((a, b) => {
+			const worn = Number(b.skin.id === wornId) - Number(a.skin.id === wornId);
+			return worn || b.recency - a.recency || a.index - b.index;
+		})
+		.map((entry) => entry.skin);
+}
+
+function useWidth(ref: RefObject<HTMLElement | null>) {
+	const [width, setWidth] = useState<number | null>(null);
+	useEffect(() => {
+		const node = ref.current;
+		if (!node) return;
+		const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+		observer.observe(node);
+		return () => observer.disconnect();
+	}, [ref]);
+	return width;
+}
+
+const chipClass =
+	"inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-card px-3 text-[13px] font-medium whitespace-nowrap tabular-nums transition-[background-color,border-color,color] duration-(--duration-fast) ease-out hover:border-border-hover aria-checked:border-transparent aria-checked:bg-primary-soft aria-checked:text-primary-text aria-checked:focus-visible:outline-foreground";
+
+function FilterChips({ value, counts }: { value: SkinFilter; counts: Record<SkinFilter, number> }) {
 	const { t } = useTranslation();
+	const options: { value: SkinFilter; label: string }[] = [
+		{ value: "all", label: t("skins.filter.all", { count: counts.all }) },
+		{ value: "uploaded", label: t("skins.filter.uploaded", { count: counts.uploaded }) },
+		{ value: "history", label: t("skins.filter.history", { count: counts.history }) },
+	];
+	return (
+		<RadioGroupPrimitive.Root
+			aria-label={t("skins.filter.label")}
+			value={value}
+			orientation="horizontal"
+			onValueChange={(next) => setSkinsFilter(next as SkinFilter)}
+			className="flex min-w-0 items-center gap-2"
+		>
+			{options.map((option) => (
+				<RadioGroupPrimitive.Item key={option.value} value={option.value} className={chipClass}>
+					{option.label}
+				</RadioGroupPrimitive.Item>
+			))}
+		</RadioGroupPrimitive.Root>
+	);
+}
+
+function AddFileButton({ narrow }: { narrow: boolean }) {
+	const { t } = useTranslation();
+	const button = (
+		<Button
+			variant="outline"
+			size={narrow ? "icon-sm" : "sm"}
+			data-skins-add
+			aria-label={narrow ? t("skins.add") : undefined}
+			aria-keyshortcuts={ariaShortcut("O")}
+			onClick={() => void pickSkinFiles()}
+		>
+			<Plus />
+			{!narrow && t("skins.add")}
+		</Button>
+	);
+	if (!narrow) return button;
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>{button}</TooltipTrigger>
+			<TooltipContent>{t("skins.add")}</TooltipContent>
+		</Tooltip>
+	);
+}
+
+function Library({ ctx, searchRef }: { ctx: Ctx; searchRef: RefObject<HTMLInputElement | null> }) {
+	const { t } = useTranslation();
+	const { store, account, view } = ctx;
+	const rootRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const width = useWidth(rootRef);
+	const narrow = width !== null && width < NARROW_LIBRARY;
 	const loading = store.status === "idle" || store.status === "loading";
 	const lateLoading = useDelayedFlag(loading, 150);
-	const [cascade] = useState(() => store.status !== "ready");
-	const total = store.items.length;
+	const accountId = account?.id ?? null;
+
+	const items = sortedSkins(store.items, view.current?.skinId);
+	const counts: Record<SkinFilter, number> = {
+		all: items.length,
+		uploaded: items.filter((skin) => !isHistorySkin(skin)).length,
+		history: items.filter((skin) => inAccountHistory(skin, accountId)).length,
+	};
+	// Чипов нет, пока история пуста: фильтр тогда — «Все».
+	const showFilters = counts.history > 0;
+	const filter = showFilters ? store.filter : "all";
+	const inFilter =
+		filter === "uploaded"
+			? items.filter((skin) => !isHistorySkin(skin))
+			: filter === "history"
+				? items.filter((skin) => inAccountHistory(skin, accountId))
+				: items;
 	const query = store.query.trim().toLocaleLowerCase();
 	const visible = query
-		? store.items.filter((skin) => skin.name.toLocaleLowerCase().includes(query))
-		: store.items;
+		? inFilter.filter((skin) => skinDisplayName(skin, accountId).toLocaleLowerCase().includes(query))
+		: inFilter;
 
 	useEffect(() => {
 		if (store.addedSeq) scrollRef.current?.scrollTo({ top: 0 });
 	}, [store.addedSeq]);
+
+	const pickButton = (
+		<Button variant="outline" onClick={() => void pickSkinFiles()}>
+			<FolderOpen />
+			{t("skins.empty.pick")}
+		</Button>
+	);
 
 	let body;
 	if (store.status === "error") {
@@ -478,7 +577,7 @@ function Library({
 		);
 	} else if (loading) {
 		body = lateLoading ? (
-			<div aria-busy className="-mx-8 min-h-0 flex-1 overflow-hidden px-8 pt-5">
+			<div aria-busy className="min-h-0 flex-1 overflow-hidden pt-1">
 				<div className="grid grid-cols-[repeat(auto-fill,152px)] gap-3">
 					{Array.from({ length: SKELETONS }, (_, index) => (
 						<SkinCardSkeleton key={index} />
@@ -488,21 +587,34 @@ function Library({
 		) : (
 			<div className="flex-1" />
 		);
-	} else if (!total) {
+	} else if (!items.length) {
 		body = (
 			<CenteredState
 				heading="h2"
 				icon={Shirt}
 				title={t("skins.empty.title")}
 				description={t("skins.empty.text")}
-				action={
-					<Button variant="outline" onClick={() => void pickSkinFiles()}>
-						<FolderOpen />
-						{t("skins.empty.pick")}
-					</Button>
-				}
+				action={pickButton}
 			/>
 		);
+	} else if (!inFilter.length) {
+		body =
+			filter === "history" ? (
+				<CenteredState
+					heading="h2"
+					icon={History}
+					title={t("skins.empty.historyTitle")}
+					description={t("skins.empty.historyText")}
+				/>
+			) : (
+				<CenteredState
+					heading="h2"
+					icon={Shirt}
+					title={t("skins.empty.uploadedTitle")}
+					description={t("skins.empty.text")}
+					action={pickButton}
+				/>
+			);
 	} else if (!visible.length) {
 		body = (
 			<CenteredState
@@ -518,53 +630,63 @@ function Library({
 		);
 	} else {
 		body = (
-			<div ref={scrollRef} className="-mx-8 min-h-0 flex-1 overflow-y-auto px-8 pt-5 pb-10">
+			// Отступ слева и сверху — место под кольцо фокуса крайних карточек.
+			<div ref={scrollRef} className="-mr-8 -ml-1 min-h-0 flex-1 overflow-y-auto pt-1 pr-8 pb-1 pl-1">
 				<ScrollContainerContext value={scrollRef}>
-					<SkinGrid
-						items={visible}
-						account={account}
-						view={view}
-						takeOffLocked={Boolean(account && isFirstProfileLoad(store, account.id))}
-						cascade={cascade}
-					/>
+					<SkinGrid items={visible} ctx={ctx} />
 				</ScrollContainerContext>
 			</div>
 		);
 	}
 
 	return (
-		<div className="flex min-w-0 flex-1 flex-col px-8 pt-7">
-			<div className="flex shrink-0 items-center justify-between gap-6">
-				<div className="flex min-w-0 items-baseline gap-2.5">
-					<h1 className="text-[28px]/[34px] font-semibold tracking-[-0.025em]">
-						{t("skins.title")}
-					</h1>
-					{total > 0 && <span className="text-sm text-muted-foreground">{total}</span>}
-				</div>
+		<section
+			ref={rootRef}
+			data-skins-drop-zone
+			aria-labelledby="skins-mine-title"
+			className="flex min-w-0 flex-1 flex-col"
+		>
+			<div className="flex h-11 shrink-0 items-center justify-between gap-3">
+				<h2
+					id="skins-mine-title"
+					className="flex min-w-0 items-baseline gap-2 text-xl/[26px] font-semibold tracking-[-0.015em]"
+				>
+					<span className="truncate">{t("skins.mine")}</span>
+					{items.length > 0 && (
+						<span className="text-[13px] font-normal tracking-normal text-muted-foreground tabular-nums">
+							{items.length}
+						</span>
+					)}
+				</h2>
 				<div className="flex shrink-0 items-center gap-2">
-					{(total >= SEARCH_FROM || store.query) && (
+					{(items.length >= SEARCH_FROM || store.query) && (
 						<SearchField
 							inputRef={searchRef}
 							value={store.query}
 							onChange={setSkinsQuery}
 							placeholder={t("skins.search")}
-							keyShortcuts="Control+F /"
-							className="w-50"
+							keyShortcuts={`${ariaShortcut("F")} /`}
+							className={narrow ? "w-44" : "w-56"}
 						/>
 					)}
-					<Button
-						variant="outline"
-						data-skins-add
-						aria-keyshortcuts="Control+O"
-						onClick={() => void pickSkinFiles()}
-					>
-						<Plus />
-						{t("skins.add")}
-					</Button>
+					<AddFileButton narrow={narrow} />
 				</div>
 			</div>
+			{loading && lateLoading ? (
+				<div className="flex h-12 shrink-0 items-center gap-2">
+					{[0, 1, 2].map((index) => (
+						<Skeleton key={index} className="h-8 w-20 rounded-full" />
+					))}
+				</div>
+			) : showFilters && store.status === "ready" ? (
+				<div className="flex h-12 shrink-0 items-center gap-2">
+					<FilterChips value={filter} counts={counts} />
+				</div>
+			) : (
+				<div className="h-3 shrink-0" />
+			)}
 			{body}
-		</div>
+		</section>
 	);
 }
 
@@ -591,37 +713,30 @@ function moveToCard(id: string | undefined) {
 	card?.click();
 }
 
-function SkinGrid({
-	items,
-	account,
-	view,
-	takeOffLocked,
-	cascade,
-}: {
-	items: SkinEntry[];
-	account: Account | null;
-	view: StageView;
-	takeOffLocked: boolean;
-	cascade: boolean;
-}) {
+function SkinGrid({ items, ctx }: { items: SkinEntry[]; ctx: Ctx }) {
 	const { t } = useTranslation();
+	const { store, account, view } = ctx;
 	const rootRef = useRef<HTMLDivElement>(null);
 	const columns = useColumns(rootRef);
 	const checkedId = view.entry?.id ?? null;
 	const checkedVisible = items.some((skin) => skin.id === checkedId);
 	const tabStop = checkedVisible ? checkedId : items[0]?.id;
 	const virtual = items.length > VIRTUAL_FROM;
+	const takeOffLocked = Boolean(account && isFirstProfileLoad(store, account.id));
+	const wearable = wearableAccount(ctx);
+	const fresh = new Set(store.fresh);
 
-	const card = (skin: SkinEntry, fadeDelay: number | null) => (
+	const card = (skin: SkinEntry) => (
 		<SkinCard
 			key={skin.id}
 			skin={skin}
 			model={checkedId === skin.id ? view.model : skin.model}
+			accountId={account?.id ?? null}
 			wornBy={view.current?.skinId === skin.id ? account : null}
 			takeOffLocked={takeOffLocked}
+			onWear={wearable ? (focus) => wearSkin(wearable, skin, focus) : null}
 			menuTabbable={tabStop === skin.id}
-			fadeDelay={fadeDelay}
-			onEnter={() => document.querySelector<HTMLElement>("[data-skin-main]")?.focus()}
+			fresh={fresh.has(skin.id)}
 			onMoveVertical={(id, direction) => {
 				const index = items.findIndex((other) => other.id === id);
 				moveToCard(items[index + direction * columns]?.id);
@@ -632,7 +747,7 @@ function SkinGrid({
 	return (
 		<RadioGroupPrimitive.Root
 			ref={rootRef}
-			aria-label={t("skins.title")}
+			aria-label={t("skins.mine")}
 			value={checkedId ?? ""}
 			loop={false}
 			onValueChange={(id) => {
@@ -641,7 +756,7 @@ function SkinGrid({
 			}}
 		>
 			{virtual ? (
-				<VirtualRows items={items} columns={columns} render={(skin) => card(skin, null)} />
+				<VirtualRows items={items} columns={columns} render={card} />
 			) : (
 				<PixelGrid
 					columns={columns}
@@ -650,9 +765,7 @@ function SkinGrid({
 					gap={GAP}
 					className="grid-cols-[repeat(auto-fill,152px)] gap-y-3"
 				>
-					{items.map((skin, index) =>
-						card(skin, cascade && index < CASCADE_LIMIT ? index * CASCADE_STEP : 0),
-					)}
+					{items.map(card)}
 				</PixelGrid>
 			)}
 		</RadioGroupPrimitive.Root>
@@ -666,7 +779,7 @@ function VirtualRows({
 }: {
 	items: SkinEntry[];
 	columns: number;
-	render: (skin: SkinEntry) => React.ReactNode;
+	render: (skin: SkinEntry) => ReactNode;
 }) {
 	const scrollRef = useScrollContainer();
 	const count = Math.ceil(items.length / columns);

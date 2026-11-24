@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { downloadsApi, type Download } from "@/lib/api";
 import { errorText, toAppError, type AppError } from "@/lib/errors";
+import { isPrimaryMod } from "@/lib/platform";
 
 /** Столько же хранит ядро. */
 const DONE_LIMIT = 20;
@@ -190,8 +191,7 @@ function blockingOverlay() {
 export function useDownloadsShortcut() {
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.code !== "KeyJ" || !event.ctrlKey || event.altKey || event.shiftKey || event.metaKey)
-				return;
+			if (event.code !== "KeyJ" || !isPrimaryMod(event)) return;
 			// WebView2 по Ctrl+J открывает свои загрузки — гасим всегда.
 			event.preventDefault();
 			if (event.repeat || blockingOverlay()) return;

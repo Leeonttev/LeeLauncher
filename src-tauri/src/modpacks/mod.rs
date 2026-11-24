@@ -242,7 +242,18 @@ fn free_space_of(dir: &Path) -> Option<u64> {
 	(ok != 0).then_some(free)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn free_space_of(dir: &Path) -> Option<u64> {
+	use std::os::unix::ffi::OsStrExt;
+	let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+	// SAFETY: нулевая структура — допустимое значение, строка с нулём живёт до конца вызова.
+	let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+	let ok = unsafe { libc::statvfs(path.as_ptr(), &mut stat) } == 0;
+	#[allow(clippy::unnecessary_cast)]
+	ok.then(|| stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+#[cfg(not(any(windows, unix)))]
 fn free_space_of(_dir: &Path) -> Option<u64> {
 	None
 }
@@ -421,7 +432,7 @@ mod tests {
 		assert_eq!(loaded.version, STATE_VERSION);
 		assert_eq!(loaded.files, state.files);
 
-		assert!(free_space(&dir.path().join("a/b/c")).is_some_and(|f| f > 0) || cfg!(not(windows)));
+		assert!(free_space(&dir.path().join("a/b/c")).is_some_and(|f| f > 0));
 		assert_eq!(
 			ensure_space(dir.path(), u64::MAX / 2).unwrap_err().code,
 			ErrorCode::NotEnoughSpace

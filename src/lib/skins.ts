@@ -14,13 +14,16 @@ import {
 	type WornSkin,
 } from "@/lib/api";
 import { errorText, toAppError, type AppError } from "@/lib/errors";
-import { formatDuration } from "@/lib/format";
+import { formatDate, formatDuration } from "@/lib/format";
 import { i18n } from "@/lib/i18n";
 
 const NO_ACCOUNT = "";
 /** Ядро пропускает смену скина не чаще раза в 10 с. */
 const WEAR_PAUSE_SECONDS = 10;
 const CELEBRATION_MS = 1200;
+const WORN_HINT_MS = 5000;
+/** Сколько новые карточки помнят, что появились от действия пользователя. */
+const FRESH_MS = 600;
 /** Потом голова берётся с mc-heads.net; поздний ответ всё равно применится. */
 const WORN_WAIT_MS = 5000;
 const MODEL_SAVE_DELAY = 300;
@@ -44,6 +47,8 @@ export type WornView = {
 };
 
 export type SkinDialogKind = "rename" | "remove";
+
+export type SkinFilter = "all" | "uploaded" | "history";
 
 export type ReplaceRequest = { account: Account; changes: SkinChanges; returnFocus: HTMLElement | null };
 
@@ -70,6 +75,7 @@ export type SkinsStore = {
 	drafts: Record<string, SkinDraft>;
 	capeTurn: number;
 	query: string;
+	filter: SkinFilter;
 	walking: boolean;
 	/** Ответ относится к отправленному, а не к текущему черновику. */
 	applying: Record<string, true>;
@@ -79,7 +85,11 @@ export type SkinsStore = {
 	/** Mojang отверг и свежий токен: флага `needsRelogin` в ядре в этом случае нет. */
 	relogin: Record<string, true>;
 	celebration: { seq: number; accountId: string } | null;
+	/** Аккаунт, на который только что надели скин: под кнопкой подсказка про игру. */
+	wornHint: string | null;
 	addedSeq: number;
+	/** Добавлены пользователем только что: только они появляются с анимацией. */
+	fresh: string[];
 	dialogs: SkinDialogs;
 };
 
@@ -92,13 +102,16 @@ let state: SkinsStore = {
 	drafts: {},
 	capeTurn: 0,
 	query: "",
+	filter: "all",
 	walking: false,
 	applying: {},
 	resetting: {},
 	waits: {},
 	relogin: {},
 	celebration: null,
+	wornHint: null,
 	addedSeq: 0,
+	fresh: [],
 	dialogs: { kind: null, session: 0 },
 };
 const listeners = new Set<() => void>();
@@ -426,6 +439,44 @@ export function setSkinsQuery(query: string) {
 	set({ query });
 }
 
+export function setSkinsFilter(filter: SkinFilter) {
+	set({ filter });
+}
+
+export function isHistorySkin(skin: SkinEntry) {
+	return skin.origin === "account";
+}
+
+/** В «Истории» — скины активного аккаунта; без записи `seen` скин считается общим. */
+export function inAccountHistory(skin: SkinEntry, accountId: string | null) {
+	if (!isHistorySkin(skin)) return false;
+	if (!accountId || !skin.seen?.length) return true;
+	return skin.seen.some((seen) => seen.accountId === accountId);
+}
+
+function seenOf(skin: SkinEntry, accountId: string | null) {
+	return skin.seen?.find((seen) => seen.accountId === accountId) ?? skin.seen?.[0];
+}
+
+/** Когда скин впервые был на аккаунте; у загруженного — когда добавлен. */
+export function skinFirstSeen(skin: SkinEntry, accountId: string | null) {
+	return seenOf(skin, accountId)?.firstSeenAt ?? skin.addedAt;
+}
+
+/** Последний раз видели или добавили: по нему новые — сверху. */
+export function skinRecency(skin: SkinEntry) {
+	let latest = Date.parse(skin.addedAt) || 0;
+	for (const seen of skin.seen ?? []) latest = Math.max(latest, Date.parse(seen.lastSeenAt) || 0);
+	return latest;
+}
+
+/** У скина из истории имени может не быть. */
+export function skinDisplayName(skin: SkinEntry, accountId: string | null = null) {
+	const name = skin.name.trim();
+	if (name) return name;
+	return i18n.t("skins.card.historyName", { date: formatDate(skinFirstSeen(skin, accountId)) });
+}
+
 export function setSkinWalking(walking: boolean) {
 	set({ walking });
 }
@@ -449,13 +500,19 @@ function rejectedText(file: SkinRejected) {
 }
 
 const REJECTED_SHOWN = 3;
+let freshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function applyAdded(result: SkinsAdded) {
 	const { added, duplicates, rejected } = result;
 	if (added.length) {
 		const ids = new Set(added.map((skin) => skin.id));
 		const items = [...[...added].reverse(), ...state.items.filter((skin) => !ids.has(skin.id))];
-		set({ items: withPendingModels(items) });
+		set({ items: withPendingModels(items), fresh: [...ids] });
+		if (freshTimer !== null) clearTimeout(freshTimer);
+		freshTimer = setTimeout(() => {
+			freshTimer = null;
+			set({ fresh: [] });
+		}, FRESH_MS);
 		toast.success(i18n.t("skins.toast.added", { count: added.length }));
 	}
 	// Такого PNG нет в списке: его файл пропадал и теперь восстановлен.
@@ -474,8 +531,12 @@ function applyAdded(result: SkinsAdded) {
 	const next = added.at(-1) ?? duplicates.at(-1);
 	if (next) {
 		tryOnSkin(state.items.find((skin) => skin.id === next.id) ?? next);
-		// Новый скин мог бы оказаться скрыт поиском.
-		set({ addedSeq: state.addedSeq + 1, query: "" });
+		// Новый скин мог бы оказаться скрыт поиском или фильтром «История».
+		set({
+			addedSeq: state.addedSeq + 1,
+			query: "",
+			filter: state.filter === "history" ? "all" : state.filter,
+		});
 	}
 	if (rejected.length) {
 		const lines = rejected.slice(0, REJECTED_SHOWN).map(rejectedText);
@@ -547,13 +608,20 @@ function startWait(accountId: string, seconds: number) {
 let celebrationSeq = 0;
 let celebrationTimer: ReturnType<typeof setTimeout> | null = null;
 
+let wornHintTimer: ReturnType<typeof setTimeout> | null = null;
+
 function celebrate(accountId: string) {
 	if (celebrationTimer !== null) clearTimeout(celebrationTimer);
-	set({ celebration: { seq: ++celebrationSeq, accountId } });
+	if (wornHintTimer !== null) clearTimeout(wornHintTimer);
+	set({ celebration: { seq: ++celebrationSeq, accountId }, wornHint: accountId });
 	celebrationTimer = setTimeout(() => {
 		celebrationTimer = null;
 		set({ celebration: null });
 	}, CELEBRATION_MS);
+	wornHintTimer = setTimeout(() => {
+		wornHintTimer = null;
+		set({ wornHint: null });
+	}, WORN_HINT_MS);
 }
 
 export function skinChangeBusy(): boolean {
@@ -730,6 +798,12 @@ function losesCurrentSkin(store: SkinsStore, accountId: string) {
 	return Boolean(skin && !skin.texture && !skin.isDefault && !skin.skinId);
 }
 
+/** Двойной щелчок и Ctrl/⌘+Enter по карточке: примерить и сразу надеть. */
+export function wearSkin(account: Account, skin: SkinEntry, returnFocus: HTMLElement | null) {
+	tryOnSkin(skin);
+	wearDraft(account, returnFocus);
+}
+
 export function confirmReplaceSkin({ account, changes }: ReplaceRequest) {
 	void apply(account, changes, true);
 }
@@ -764,19 +838,6 @@ function patchCurrentSkinId(match: (skin: WornSkin, accountId: string) => boolea
 	for (const [accountId, skin] of Object.entries(map))
 		if (match(skin, accountId)) map[accountId] = { ...skin, skinId };
 	set({ profiles, worn: { ...state.worn, map } });
-}
-
-export async function saveCurrentSkin(accountId: string) {
-	try {
-		const entry = await skinsApi.saveCurrent(accountId);
-		if (!state.items.some((skin) => skin.id === entry.id))
-			set({ items: withPendingModels([entry, ...state.items]) });
-		patchCurrentSkinId((_, id) => id === accountId, entry.id);
-		return true;
-	} catch (err) {
-		toast.error(errorText(toAppError(err)));
-		return false;
-	}
 }
 
 export async function renameSkin(id: string, name: string) {
@@ -815,4 +876,6 @@ export function closeSkinDialog() {
 import.meta.hot?.dispose(() => {
 	for (const unlisten of unlisteners) unlisten();
 	if (waitTimer !== null) clearInterval(waitTimer);
+	if (wornHintTimer !== null) clearTimeout(wornHintTimer);
+	if (freshTimer !== null) clearTimeout(freshTimer);
 });

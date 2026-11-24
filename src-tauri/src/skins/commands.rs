@@ -232,9 +232,7 @@ pub async fn skin_apply(
 	let result = {
 		let (app, id) = (&app, account_id.as_str());
 		let token = move |force| async move { token_of(app, accounts, id, force).await };
-		skins
-			.apply(&account_id, account.kind, &account.username, request, token)
-			.await
+		skins.apply(&account_id, account.kind, request, token).await
 	};
 	if matches!(&result, Err(err) if err.code == ErrorCode::SkinNotFound) {
 		emit_changed(&app);

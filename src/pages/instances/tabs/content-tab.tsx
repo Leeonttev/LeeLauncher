@@ -104,6 +104,7 @@ import { openInstanceFolder, statusOf, useInstances } from "@/lib/instances";
 import { openManualDialog, useManualPending } from "@/lib/manual";
 import { navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { ariaDeleteKey, isDeleteKey } from "@/lib/platform";
 
 const TYPE_ICONS: Record<ContentType, LucideIcon> = {
 	mod: Puzzle,
@@ -697,7 +698,7 @@ function ContentRow({
 		<div
 			className="relative -mx-3 flex h-14 items-center gap-3 rounded-lg px-3 transition-colors duration-(--duration-fast) ease-out hover:bg-accent"
 			onKeyDown={(event) => {
-				if (event.key !== "Delete" || locked) return;
+				if (!isDeleteKey(event) || locked) return;
 				if ((event.target as HTMLElement).closest("[role=menu]")) return;
 				event.preventDefault();
 				onRemove(item);
@@ -705,7 +706,7 @@ function ContentRow({
 		>
 			<button
 				type="button"
-				aria-keyshortcuts="Delete"
+				aria-keyshortcuts={ariaDeleteKey}
 				className="relative -my-1 -ml-1 flex min-w-0 flex-1 items-center gap-3 rounded-md border border-transparent py-1 pl-1 text-left"
 				onClick={open}
 			>

@@ -50,7 +50,24 @@ fn total_bytes() -> Option<u64> {
 	Some(kb * 1024)
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+fn total_bytes() -> Option<u64> {
+	let mut value: u64 = 0;
+	let mut size = std::mem::size_of::<u64>();
+	// SAFETY: имя с нулём в конце, буфер и его размер верны на время вызова.
+	let ok = unsafe {
+		libc::sysctlbyname(
+			c"hw.memsize".as_ptr(),
+			(&mut value as *mut u64).cast(),
+			&mut size,
+			std::ptr::null_mut(),
+			0,
+		)
+	} == 0;
+	(ok && size == std::mem::size_of::<u64>() && value > 0).then_some(value)
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn total_bytes() -> Option<u64> {
 	None
 }
@@ -72,7 +89,7 @@ mod tests {
 	#[test]
 	fn detects_memory() {
 		let mem = system_memory();
-		if cfg!(windows) {
+		if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
 			assert!(mem.total_mb > 512);
 		}
 	}

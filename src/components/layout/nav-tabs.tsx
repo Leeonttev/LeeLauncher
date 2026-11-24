@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { statusOf, useInstances } from "@/lib/instances";
 import { navigate, sectionOf, useRoute } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { TITLEBAR_BREAKPOINTS, titlebarClasses } from "@/components/layout/titlebar-layout";
 
 type Activity = { label: string } | null;
 
@@ -25,9 +26,6 @@ function useInstancesActivity(): Activity {
 const planckTransition = { type: "spring", stiffness: 500, damping: 40, mass: 0.8 } as const;
 
 const planckClass = "pointer-events-none absolute inset-x-3 bottom-0 z-20 h-0.5 rounded-t-[2px] bg-primary";
-
-/** Пороги ужатия полосы заголовка; те же числа, что в container query `titlebar.tsx`: подсказки живут в портале, их решает JS. Расчёт — scripts/measure-titlebar.py. */
-const TITLEBAR_BREAKPOINTS = { wordmark: 1080, compact: 940, iconsOnly: 880 } as const;
 
 function subscribeResize(listener: () => void) {
 	window.addEventListener("resize", listener);
@@ -50,6 +48,7 @@ function Tab({
 	group: string;
 }) {
 	const { t } = useTranslation();
+	// Подсказки живут в портале вне контейнера полосы, поэтому порог решает JS.
 	const iconsOnly = useNarrowerThan(TITLEBAR_BREAKPOINTS.iconsOnly);
 	const label = t(item.labelKey);
 	// Подсказка нужна, только когда подпись спрятана.
@@ -62,12 +61,13 @@ function Tab({
 			aria-label={activity ? activity.label : undefined}
 			onClick={() => navigate(item.path)}
 			className={cn(
-				"relative flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium whitespace-nowrap transition-[color,background-color,scale] duration-(--duration-fast) ease-out hover:bg-sidebar-accent hover:text-foreground active:scale-[0.98] @max-[880px]/titlebar:px-2.5",
+				"relative flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium whitespace-nowrap transition-[color,background-color,scale] duration-(--duration-fast) ease-out hover:bg-sidebar-accent hover:text-foreground active:scale-[0.98]",
+				titlebarClasses.tab,
 				active ? "text-foreground" : "text-muted-foreground",
 			)}
 		>
 			<item.icon />
-			<span className="@max-[880px]/titlebar:sr-only">{label}</span>
+			<span className={titlebarClasses.tabLabel}>{label}</span>
 			{activity && <span aria-hidden className="size-2 rounded-full bg-primary" />}
 		</button>
 	);

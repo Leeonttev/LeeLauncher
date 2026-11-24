@@ -34,6 +34,7 @@ import { compareRecent, reloadInstances, useInstances } from "@/lib/instances";
 import { compareGameVersions, LOADER_NAMES } from "@/lib/loaders";
 import { useModpackFileShortcut } from "@/lib/modpacks";
 import { readStorage, writeStorage } from "@/lib/storage";
+import { ariaShortcut, isPrimaryMod, noModifiers } from "@/lib/platform";
 
 const SORTS = ["recent", "name", "version", "created"] as const;
 type Sort = (typeof SORTS)[number];
@@ -107,12 +108,11 @@ export function InstancesPage() {
 	useEffect(() => {
 		if (!toolbar) return;
 		const onKeyDown = (event: KeyboardEvent) => {
-			const ctrlF = event.code === "KeyF" && event.ctrlKey && !event.altKey && !event.shiftKey;
+			const ctrlF = event.code === "KeyF" && isPrimaryMod(event);
 			// По `event.code`: в русской раскладке на этой клавише точка.
 			const slash =
 				(event.code === "Slash" || event.code === "NumpadDivide") &&
-				!event.ctrlKey &&
-				!event.altKey &&
+				noModifiers(event) &&
 				!event.shiftKey;
 			if (!ctrlF && !slash) return;
 			if (typingTarget(event.target) || overlayOpen()) return;
@@ -219,7 +219,7 @@ export function InstancesPage() {
 							value={query}
 							placeholder={t("instances.search.placeholder")}
 							aria-label={t("instances.search.placeholder")}
-							aria-keyshortcuts="Control+F /"
+							aria-keyshortcuts={`${ariaShortcut("F")} /`}
 							spellCheck={false}
 							autoComplete="off"
 							className="h-9 w-60"

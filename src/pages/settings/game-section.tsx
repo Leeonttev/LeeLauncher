@@ -13,19 +13,20 @@ import { formatMemory } from "@/lib/format";
 import {
 	defaultMemory,
 	initGameSettings,
+	JAVA_MAJORS,
 	openAppFolder,
 	reloadSettings,
 	rescanJava,
+	settingsJavaFieldId,
+	SETTINGS_JAVA_ROWS_ID,
 	updateJava,
 	updateSettings,
 	useGameSettings,
+	type JavaMajor,
 } from "@/lib/game-settings";
 import { setSameAccountWarning, useSameAccountWarning } from "@/lib/instances";
 import { cn } from "@/lib/utils";
 import { SettingRow } from "@/pages/settings/setting-row";
-
-const JAVA_MAJORS = [21, 17, 8] as const;
-type JavaMajor = (typeof JAVA_MAJORS)[number];
 
 export function GameSection() {
 	const { t } = useTranslation();
@@ -51,6 +52,7 @@ export function GameSection() {
 				<MemoryRow />
 				<JavaRows />
 				<Java4ShellRow />
+				<ProtectPacksRow />
 				<SameAccountRow />
 				<DataFolderRow />
 			</div>
@@ -94,7 +96,7 @@ function JavaRows() {
 	const settingsLoading = game.settings.status !== "ready";
 
 	return (
-		<div className="py-5">
+		<div id={SETTINGS_JAVA_ROWS_ID} className="scroll-mt-4 py-5">
 			<div className="flex items-start gap-6">
 				<div className="min-w-0 flex-1">
 					<h3 className="text-sm font-medium">{t("settings.game.java.title")}</h3>
@@ -200,6 +202,7 @@ function JavaMajorRow({
 				</Button>
 			)}
 			<JavaSelect
+				id={settingsJavaFieldId(major)}
 				value={path}
 				installs={installs}
 				major={major}
@@ -233,6 +236,32 @@ function Java4ShellRow() {
 					if (saving) return;
 					setSaving(true);
 					void updateSettings({ java4shellMitigation: next }).finally(() => setSaving(false));
+				}}
+			/>
+		</SettingRow>
+	);
+}
+
+function ProtectPacksRow() {
+	const { t } = useTranslation();
+	const settings = useGameSettings().settings;
+	const [saving, setSaving] = useState(false);
+	const checked = settings.value?.protectServerPacks ?? true;
+	return (
+		<SettingRow
+			inline
+			htmlFor="settings-protect-packs"
+			title={t("settings.game.protectPacks.title")}
+			description={t("settings.game.protectPacks.description")}
+		>
+			<Switch
+				id="settings-protect-packs"
+				checked={checked}
+				disabled={settings.status !== "ready"}
+				onCheckedChange={(next) => {
+					if (saving) return;
+					setSaving(true);
+					void updateSettings({ protectServerPacks: next }).finally(() => setSaving(false));
 				}}
 			/>
 		</SettingRow>

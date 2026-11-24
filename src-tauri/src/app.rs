@@ -125,12 +125,14 @@ mod tests {
 
 	#[test]
 	fn paths_and_kinds() {
-		let layout = Layout::new(PathBuf::from(r"C:\Data\LeeLauncher"));
+		let root = std::env::temp_dir().join("LeeLauncher");
+		let text = |p: PathBuf| p.to_string_lossy().into_owned();
+		let layout = Layout::new(root.clone());
 		let paths = AppPaths::new(&layout);
-		assert_eq!(paths.data, r"C:\Data\LeeLauncher");
-		assert_eq!(paths.logs, r"C:\Data\LeeLauncher\logs");
-		assert_eq!(paths.instances, r"C:\Data\LeeLauncher\instances");
-		assert_eq!(paths.java, r"C:\Data\LeeLauncher\java");
+		assert_eq!(paths.data, text(root.clone()));
+		assert_eq!(paths.logs, text(root.join("logs")));
+		assert_eq!(paths.instances, text(root.join("instances")));
+		assert_eq!(paths.java, text(root.join("java")));
 		let json = serde_json::to_value(&paths).unwrap();
 		assert!(json.get("instances").is_some());
 

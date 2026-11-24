@@ -74,17 +74,24 @@ fn is_junk(name: &str, dir: bool) -> bool {
 			lower.as_str(),
 			"versions"
 				| "libraries"
-				| "assets" | "runtime"
-				| "natives" | "logs"
+				| "assets"
+				| "runtime"
+				| "natives"
+				| "logs"
 				| "crash-reports"
-				| "debug" | ".fabric"
+				| "debug"
+				| ".fabric"
 				| ".mixin.out"
-				| ".cache" | "cache"
-				| "webcache" | "webcache2"
-				| "bin" | "downloads"
+				| ".cache"
+				| "cache"
+				| "webcache"
+				| "webcache2"
+				| "bin"
+				| "downloads"
 				| ".curseclient"
 				| "profilekeys"
-				| ".quilt" | "jarmods"
+				| ".quilt"
+				| "jarmods"
 				| "backups"
 		);
 	}
@@ -210,7 +217,7 @@ pub struct Candidate {
 	pub sizes: BTreeMap<Category, u64>,
 	/// `data:` URL картинки (до 64 КБ) или `https://` адрес.
 	pub icon: Option<String>,
-	/// Общая папка `.minecraft` официального лаунчера.
+	/// Общая папка игры официального лаунчера (`.minecraft`, на macOS `minecraft`).
 	pub shared: bool,
 	/// Уже переносили (есть сборка с таким `importedFrom`).
 	pub imported: bool,
@@ -323,7 +330,9 @@ pub fn default_roots() -> Vec<(LauncherKind, PathBuf)> {
 			data.join("gdlauncher_carbon").join("data"),
 		));
 		roots.push((LauncherKind::Gdlauncher, data.join("gdlauncher_next")));
-		roots.push((LauncherKind::Official, data.join(".minecraft")));
+	}
+	if let Some(official) = crate::java::official_minecraft_dir() {
+		roots.push((LauncherKind::Official, official));
 	}
 	if let Some(home) = dirs::home_dir() {
 		let cf = home.join("curseforge").join("minecraft");

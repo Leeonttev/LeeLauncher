@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>ru</string>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.games</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>LeeLauncher looks in Downloads for mod files you downloaded from a website, so it can add them to your instance.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>LeeLauncher reads Documents to import instances from other launchers and to open files you choose.</string>
+</dict>
+</plist>

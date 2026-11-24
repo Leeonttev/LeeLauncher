@@ -21,10 +21,11 @@ import {
 	closeSkinDialog,
 	confirmReplaceSkin,
 	currentSkin,
+	isHistorySkin,
 	removeSkin,
 	renameSkin,
-	saveCurrentSkin,
 	SKIN_NAME_MAX,
+	skinDisplayName,
 	takeOffSkin,
 	useSkins,
 	type SkinsStore,
@@ -78,12 +79,14 @@ function RenameDialog({ store }: { store: SkinsStore }) {
 				onCloseAutoFocus={(event) => restoreFocus(event, lastFocus.current)}
 			>
 				<DialogTitle className="pr-10">{t("skins.rename.title")}</DialogTitle>
-				<DialogDescription className="sr-only">{shown?.skin.name}</DialogDescription>
+				<DialogDescription className="sr-only">
+					{shown ? skinDisplayName(shown.skin, getAccounts().activeId) : null}
+				</DialogDescription>
 				{shown && (
 					<RenameForm
 						key={shown.session}
 						id={shown.skin.id}
-						current={shown.skin.name}
+						current={skinDisplayName(shown.skin, getAccounts().activeId)}
 						busy={busy}
 						setBusy={setBusy}
 					/>
@@ -173,12 +176,19 @@ function RemoveDialog({ store }: { store: SkinsStore }) {
 		if (dialog) lastFocus.current = dialog.returnFocus;
 	}, [dialog]);
 
+	const history = shown ? isHistorySkin(shown.skin) : false;
 	const wornSomewhere =
 		dialog !== null &&
 		getAccounts().accounts.some((a) => currentSkin(store, a.id)?.skinId === dialog.skin.id);
 	// Запись стирается раньше, чем диалог закроется: текст на это время не меняем.
 	const text = useLast(
-		dialog && !busy ? (wornSomewhere ? t("skins.remove.textWorn") : t("skins.remove.text")) : null,
+		dialog && !busy
+			? history
+				? t("skins.removeHistory.text")
+				: wornSomewhere
+					? t("skins.remove.textWorn")
+					: t("skins.remove.text")
+			: null,
 	);
 
 	const confirm = async () => {
@@ -221,7 +231,11 @@ function RemoveDialog({ store }: { store: SkinsStore }) {
 			>
 				<AlertDialogHeader className="gap-2">
 					<AlertDialogTitle className="break-words">
-						{t("skins.remove.title", { name: shown?.skin.name ?? "" })}
+						{history
+							? t("skins.removeHistory.title")
+							: t("skins.remove.title", {
+									name: shown ? skinDisplayName(shown.skin, getAccounts().activeId) : "",
+								})}
 					</AlertDialogTitle>
 					<AlertDialogDescription className="text-sm text-muted-foreground">
 						{text}
@@ -233,7 +247,7 @@ function RemoveDialog({ store }: { store: SkinsStore }) {
 					</AlertDialogCancel>
 					<Button variant="destructive" disabled={busy} onClick={() => void confirm()}>
 						{busy && <LoaderCircle className="animate-spin" />}
-						{t("common.remove")}
+						{history ? t("skins.removeHistory.confirm") : t("common.remove")}
 					</Button>
 				</AlertDialogFooter>
 			</AlertDialogContent>
@@ -245,29 +259,14 @@ function TakeOffDialog({ store }: { store: SkinsStore }) {
 	const { t } = useTranslation();
 	const dialog = store.dialogs.kind === "takeOff" ? store.dialogs : null;
 	const lastFocus = useRef<HTMLElement | null>(null);
-	const [saving, setSaving] = useState(false);
-	const confirmRef = useRef<HTMLButtonElement>(null);
 	useEffect(() => {
 		if (dialog) lastFocus.current = dialog.returnFocus;
 	}, [dialog]);
-
-	// У `skin_reset` страховки нет: несохранённый скин пропадёт, поэтому предлагаем сохранить здесь же.
-	const skin = dialog ? currentSkin(store, dialog.accountId) : null;
-	const unsaved = useLast(dialog ? Boolean(skin && !skin.skinId) : null);
 
 	const confirm = () => {
 		const account = getAccounts().accounts.find((a) => a.id === dialog?.accountId);
 		closeSkinDialog();
 		if (account) void takeOffSkin(account);
-	};
-
-	const save = async () => {
-		if (!dialog || saving) return;
-		setSaving(true);
-		const saved = await saveCurrentSkin(dialog.accountId);
-		setSaving(false);
-		// Кнопка «Сохранить» исчезает: без этого фокус уйдёт на окно диалога.
-		if (saved) confirmRef.current?.focus();
 	};
 
 	return (
@@ -284,22 +283,12 @@ function TakeOffDialog({ store }: { store: SkinsStore }) {
 				<AlertDialogHeader className="gap-2">
 					<AlertDialogTitle>{t("skins.takeOff.title")}</AlertDialogTitle>
 					<AlertDialogDescription className="text-sm text-muted-foreground">
-						{unsaved ? t("skins.takeOff.textUnsaved") : t("skins.takeOff.text")}
+						{t("skins.takeOff.text")}
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
 					<AlertDialogCancel autoFocus>{t("common.cancel")}</AlertDialogCancel>
-					{unsaved && (
-						<Button
-							variant="outline"
-							aria-disabled={saving || undefined}
-							onClick={() => void save()}
-						>
-							{saving && <LoaderCircle className="animate-spin" />}
-							{t("skins.current.save")}
-						</Button>
-					)}
-					<Button ref={confirmRef} variant="destructive" onClick={confirm}>
+					<Button variant="destructive" onClick={confirm}>
 						{t("skins.takeOff.confirm")}
 					</Button>
 				</AlertDialogFooter>

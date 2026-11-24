@@ -1,6 +1,7 @@
 import {
 	ArrowLeft,
 	Ellipsis,
+	ExternalLink,
 	FolderOpen,
 	Globe,
 	Image,
@@ -11,6 +12,7 @@ import {
 	ScrollText,
 	Search,
 	Settings,
+	ShieldAlert,
 	X,
 	type LucideIcon,
 } from "lucide-react";
@@ -37,7 +39,7 @@ import { useInstanceContent } from "@/lib/content";
 import { coverOf } from "@/lib/covers";
 import { errorText, toAppError, type AppError } from "@/lib/errors";
 import { formatBytes, formatNumber } from "@/lib/format";
-import { openAppFolder } from "@/lib/game-settings";
+import { initGameSettings, openAppFolder, useGameSettings } from "@/lib/game-settings";
 import { INSTANCE_TABS, setInstanceTab, useInstancePageState, type InstanceTab } from "@/lib/instance-page";
 import {
 	cancelInstall,
@@ -52,6 +54,7 @@ import {
 } from "@/lib/instances";
 import { goBack, instanceIdOf, navigate, useRoute } from "@/lib/router";
 import { useScreenshots } from "@/lib/screenshots";
+import { dismissFontVuln, openFontVulnInfo, useFontVulnDismissed } from "@/lib/security";
 import { cn } from "@/lib/utils";
 import { useWorlds } from "@/lib/worlds";
 import { InstanceSettings } from "@/pages/instances/instance-settings";
@@ -59,6 +62,7 @@ import { ContentTab } from "@/pages/instances/tabs/content-tab";
 import { LogTab } from "@/pages/instances/tabs/log-tab";
 import { ScreenshotsTab } from "@/pages/instances/tabs/screenshots-tab";
 import { WorldsTab } from "@/pages/instances/tabs/worlds-tab";
+import { ariaBackShortcut, isBackShortcut } from "@/lib/platform";
 
 const TAB_ICONS: Record<InstanceTab, LucideIcon> = {
 	content: Puzzle,
@@ -83,7 +87,7 @@ export function InstancePage() {
 
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key !== "ArrowLeft" || !event.altKey || event.ctrlKey || event.shiftKey) return;
+			if (!isBackShortcut(event)) return;
 			if (typingTarget(event.target) || overlayOpen()) return;
 			event.preventDefault();
 			goBack("/instances");
@@ -145,7 +149,7 @@ export function InstancePage() {
 				<Button
 					variant="ghost"
 					size="sm"
-					aria-keyshortcuts="Alt+ArrowLeft"
+					aria-keyshortcuts={ariaBackShortcut}
 					className="-ml-2.5 px-2.5 has-[>svg]:px-2.5"
 					onClick={() => goBack("/instances")}
 				>
@@ -193,7 +197,7 @@ function InstanceView({ instance }: { instance: Instance }) {
 		);
 
 	return (
-		<div data-instance-page className="flex flex-1 flex-col">
+		<div data-instance-page data-instance-id={instance.id} className="flex flex-1 flex-col">
 			<div className="px-8 pt-7 pb-3">
 				<Banner instance={instance} />
 			</div>
@@ -207,6 +211,7 @@ function InstanceView({ instance }: { instance: Instance }) {
 				tabs={tabs}
 			>
 				<div className="flex flex-1 flex-col px-8 pb-10">
+					<FontVulnWarning instance={instance} />
 					<StatusBlock instance={instance} />
 					<TabsContent value="content" className={content_("content")}>
 						<ContentTab instance={instance} />
@@ -243,7 +248,7 @@ function Banner({ instance }: { instance: Instance }) {
 			<div aria-hidden className={scrim} />
 			<button
 				type="button"
-				aria-keyshortcuts="Alt+ArrowLeft"
+				aria-keyshortcuts={ariaBackShortcut}
 				className={cn(onCoverButton, "absolute top-5 left-6 h-8 px-3")}
 				onClick={() => goBack("/instances")}
 			>
@@ -299,6 +304,71 @@ function Banner({ instance }: { instance: Instance }) {
 				<PlayButton instance={instance} size="banner" />
 			</div>
 		</section>
+	);
+}
+
+function FontVulnWarning({ instance }: { instance: Instance }) {
+	const { t } = useTranslation();
+	const settings = useGameSettings().settings;
+	const dismissed = useFontVulnDismissed(instance.id);
+	const show = instance.fontVulnerable === true && !dismissed;
+	const protectedPacks = settings.status === "ready" && (settings.value?.protectServerPacks ?? true);
+
+	useEffect(() => initGameSettings(), []);
+
+	function dismiss() {
+		dismissFontVuln(instance.id);
+		// Крестик исчезает вместе с плашкой: фокус — на текущую вкладку, а не на body.
+		document
+			.querySelector<HTMLElement>("[data-instance-page] [role=tab][aria-selected=true]")
+			?.focus({ preventScroll: true });
+	}
+
+	return (
+		<AnimatePresence initial={false}>
+			{show && (
+				<motion.div
+					key="font-vuln"
+					role="note"
+					aria-labelledby="font-vuln-title"
+					initial={{ opacity: 0 }}
+					animate={{ opacity: 1 }}
+					exit={{ opacity: 0 }}
+					transition={{ duration: 0.2 }}
+					className="mt-5 flex items-start gap-3 border-b pb-4"
+				>
+					<ShieldAlert className="mt-0.5 shrink-0 text-warning" />
+					<div className="min-w-0 flex-1">
+						<p id="font-vuln-title" className="text-sm/5 font-semibold">
+							{t("security.fontVuln.title")}
+						</p>
+						<p className="mt-0.5 max-w-prose text-[13px]/[18px] text-muted-foreground">
+							{protectedPacks
+								? t("security.fontVuln.descriptionProtected")
+								: t("security.fontVuln.description")}
+						</p>
+					</div>
+					<Button variant="outline" size="sm" className="shrink-0" onClick={openFontVulnInfo}>
+						<ExternalLink />
+						{t("common.details")}
+					</Button>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								aria-label={t("security.fontVuln.dismiss")}
+								className="shrink-0"
+								onClick={dismiss}
+							>
+								<X />
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent>{t("security.fontVuln.dismiss")}</TooltipContent>
+					</Tooltip>
+				</motion.div>
+			)}
+		</AnimatePresence>
 	);
 }
 

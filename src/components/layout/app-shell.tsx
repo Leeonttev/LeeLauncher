@@ -27,6 +27,7 @@ import { initManual } from "@/lib/manual";
 import { initMigrationNotice } from "@/lib/migration";
 import { useRoute, type SectionPath } from "@/lib/router";
 import { initSkins } from "@/lib/skins";
+import { initServerPacksNotice } from "@/lib/security";
 import { initTrayNotice } from "@/lib/tray";
 import { cn } from "@/lib/utils";
 import { CatalogPage } from "@/pages/catalog/catalog-page";
@@ -94,6 +95,7 @@ export function AppShell() {
 		initSkins();
 		void initMigrationNotice();
 		initTrayNotice();
+		initServerPacksNotice();
 	}, []);
 
 	return (

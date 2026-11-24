@@ -140,6 +140,39 @@ pub fn native_download(lib: &Library, platform: Platform) -> Option<(String, &Li
 	Some((classifier, download))
 }
 
+/// Разрядность Java, которая нужна версии на этой ОС: на arm64 без arm64-natives (Minecraft до 1.19,
+/// LWJGL 2.9/3.2) — `x64` через эмуляцию (Rosetta на macOS). `None` — подойдёт любая, лучше родная.
+pub fn required_java_arch(libraries: &[Library], host: Platform) -> Option<&'static str> {
+	if host.arch != "arm64" {
+		return None;
+	}
+	let arm = Platform {
+		os: host.os,
+		arch: "arm64",
+	};
+	let arm_key = format!("{}-arm64", host.os);
+	let mut has_natives = false;
+	for lib in libraries.iter().filter(|l| library_allowed(l, arm)) {
+		if let Some(natives) = &lib.natives {
+			if natives.contains_key(&arm_key) {
+				return None;
+			}
+			has_natives |= natives.contains_key(host.os);
+			continue;
+		}
+		let Some(classifier) = lib.name.split('@').next().and_then(|c| c.split(':').nth(3)) else {
+			continue;
+		};
+		if classifier.starts_with("natives-") {
+			if classifier.contains("arm64") || classifier.contains("aarch64") {
+				return None;
+			}
+			has_natives = true;
+		}
+	}
+	has_natives.then_some("x64")
+}
+
 /// Путь артефакта maven: `group:name:version[:classifier][@ext]` → `group/path/name/version/name-version[-classifier].ext`.
 pub fn maven_path(coords: &str) -> Option<String> {
 	let (coords, ext) = coords.split_once('@').unwrap_or((coords, "jar"));
@@ -252,6 +285,53 @@ mod tests {
 			)
 		);
 		assert_eq!(maven_path("broken"), None);
+	}
+
+	#[test]
+	fn java_arch_for_old_versions() {
+		let libs = |v: serde_json::Value| -> Vec<Library> { serde_json::from_value(v).unwrap() };
+		const MAC_ARM: Platform = Platform {
+			os: "osx",
+			arch: "arm64",
+		};
+		const MAC_X64: Platform = Platform {
+			os: "osx",
+			arch: "x64",
+		};
+		const WIN_ARM: Platform = Platform {
+			os: "windows",
+			arch: "arm64",
+		};
+		let osx = serde_json::json!([{ "action": "allow", "os": { "name": "osx" } }]);
+		let win = serde_json::json!([{ "action": "allow", "os": { "name": "windows" } }]);
+		// 1.16.5: natives старого формата только x64.
+		let old = libs(serde_json::json!([
+			{ "name": "org.lwjgl:lwjgl:3.2.1", "natives": { "osx": "natives-macos" }, "rules": osx },
+			{ "name": "org.lwjgl:lwjgl:3.2.2", "natives": { "windows": "natives-windows" },
+			  "rules": [{ "action": "allow" }, { "action": "disallow", "os": { "name": "osx" } }] }
+		]));
+		assert_eq!(required_java_arch(&old, MAC_ARM), Some("x64"));
+		assert_eq!(required_java_arch(&old, WIN_ARM), Some("x64"));
+		assert_eq!(required_java_arch(&old, MAC_X64), None);
+		// 1.19+: есть natives-macos-arm64 / natives-windows-arm64.
+		let new = libs(serde_json::json!([
+			{ "name": "org.lwjgl:lwjgl:3.3.3:natives-macos", "rules": osx },
+			{ "name": "org.lwjgl:lwjgl:3.3.3:natives-macos-arm64", "rules": osx },
+			{ "name": "org.lwjgl:lwjgl:3.3.3:natives-windows", "rules": win },
+			{ "name": "org.lwjgl:lwjgl:3.3.3:natives-windows-arm64", "rules": win }
+		]));
+		assert_eq!(required_java_arch(&new, MAC_ARM), None);
+		assert_eq!(required_java_arch(&new, WIN_ARM), None);
+		// Только x64-natives нового формата.
+		let x64 = libs(serde_json::json!([
+			{ "name": "org.lwjgl:lwjgl:3.3.0:natives-macos", "rules": osx }
+		]));
+		assert_eq!(required_java_arch(&x64, MAC_ARM), Some("x64"));
+		// Без natives — любая.
+		assert_eq!(
+			required_java_arch(&libs(serde_json::json!([{ "name": "a:b:1" }])), MAC_ARM),
+			None
+		);
 	}
 
 	#[test]

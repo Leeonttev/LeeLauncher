@@ -1,5 +1,5 @@
-//! Минимальное чтение NBT (формат `level.dat`): только то, что нужно для списка миров.
-//! Массивы не храним (только длину), глубина и размеры ограничены.
+//! NBT: чтение для списка миров (`Tag`, массивы — только длина) и разбор без потерь
+//! с записью обратно (`Document`, для `servers.dat`). Глубина и размеры ограничены.
 
 use std::io::Read;
 
@@ -58,6 +58,8 @@ pub enum NbtError {
 	TooDeep,
 	#[error("не NBT: корень не compound")]
 	NotCompound,
+	#[error("лишние данные после корня")]
+	Trailing,
 	#[error("{0}")]
 	Io(#[from] std::io::Error),
 }
@@ -179,6 +181,190 @@ pub fn read_file(path: &std::path::Path) -> Result<Tag, NbtError> {
 	}
 }
 
+/// NBT без потерь: строки и массивы хранятся как есть (байты), чтобы файл записался обратно таким же.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Node {
+	/// Число, строка или массив: тип и байты значения без изменений.
+	Leaf(u8, Vec<u8>),
+	/// Тип элементов и элементы (у пустого списка тип сохраняется).
+	List(u8, Vec<Node>),
+	/// Имена — байты modified UTF-8 как в файле.
+	Compound(Vec<(Vec<u8>, Node)>),
+}
+
+impl Node {
+	pub fn kind(&self) -> u8 {
+		match self {
+			Self::Leaf(kind, _) => *kind,
+			Self::List(..) => 9,
+			Self::Compound(_) => 10,
+		}
+	}
+
+	pub fn get(&self, name: &str) -> Option<&Node> {
+		match self {
+			Self::Compound(items) => items
+				.iter()
+				.find(|(n, _)| n == name.as_bytes())
+				.map(|(_, t)| t),
+			_ => None,
+		}
+	}
+
+	pub fn get_mut(&mut self, name: &str) -> Option<&mut Node> {
+		match self {
+			Self::Compound(items) => items
+				.iter_mut()
+				.find(|(n, _)| n == name.as_bytes())
+				.map(|(_, t)| t),
+			_ => None,
+		}
+	}
+
+	/// Убирает поле compound. `true` — оно было.
+	pub fn remove(&mut self, name: &str) -> bool {
+		match self {
+			Self::Compound(items) => {
+				let before = items.len();
+				items.retain(|(n, _)| n != name.as_bytes());
+				items.len() != before
+			}
+			_ => false,
+		}
+	}
+
+	fn write(&self, out: &mut Vec<u8>) {
+		match self {
+			Self::Leaf(_, raw) => out.extend_from_slice(raw),
+			Self::List(item, list) => {
+				out.push(*item);
+				out.extend((list.len() as i32).to_be_bytes());
+				for node in list {
+					node.write(out);
+				}
+			}
+			Self::Compound(items) => {
+				for (name, node) in items {
+					out.push(node.kind());
+					out.extend((name.len() as u16).to_be_bytes());
+					out.extend_from_slice(name);
+					node.write(out);
+				}
+				out.push(0);
+			}
+		}
+	}
+}
+
+/// Корень файла NBT без потерь.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Document {
+	pub name: Vec<u8>,
+	pub root: Node,
+	/// Файл был сжат gzip: записывается сжатым.
+	pub gzip: bool,
+}
+
+impl Reader<'_> {
+	fn raw_string(&mut self) -> Result<Vec<u8>, NbtError> {
+		let n = u16::from_be_bytes(self.array()?) as usize;
+		Ok(self.take(n)?.to_vec())
+	}
+
+	fn node(&mut self, kind: u8, depth: usize) -> Result<Node, NbtError> {
+		if depth > MAX_DEPTH {
+			return Err(NbtError::TooDeep);
+		}
+		let start = self.pos;
+		Ok(match kind {
+			1..=6 => {
+				let size = [1, 2, 4, 8, 4, 8][usize::from(kind - 1)];
+				self.take(size)?;
+				Node::Leaf(kind, self.data[start..self.pos].to_vec())
+			}
+			7 | 11 | 12 => {
+				let size = match kind {
+					7 => 1,
+					11 => 4,
+					_ => 8,
+				};
+				let n = self.len(size)?;
+				self.take(n * size)?;
+				Node::Leaf(kind, self.data[start..self.pos].to_vec())
+			}
+			8 => {
+				self.raw_string()?;
+				Node::Leaf(kind, self.data[start..self.pos].to_vec())
+			}
+			9 => {
+				let item = self.u8()?;
+				let n = self.len(1)?;
+				let mut list = Vec::with_capacity(n.min(1024));
+				if item != 0 {
+					for _ in 0..n {
+						list.push(self.node(item, depth + 1)?);
+					}
+				}
+				Node::List(item, list)
+			}
+			10 => {
+				let mut items = Vec::new();
+				loop {
+					let kind = self.u8()?;
+					if kind == 0 {
+						break;
+					}
+					let name = self.raw_string()?;
+					items.push((name, self.node(kind, depth + 1)?));
+				}
+				Node::Compound(items)
+			}
+			other => return Err(NbtError::BadType(other)),
+		})
+	}
+}
+
+/// Разбирает файл NBT без потерь (сжатый gzip или нет). После корня в файле ничего быть не должно.
+pub fn parse_document(raw: &[u8]) -> Result<Document, NbtError> {
+	let gzip = raw.starts_with(&[0x1f, 0x8b]);
+	let unpacked;
+	let data = if gzip {
+		let mut data = Vec::new();
+		flate2::read::GzDecoder::new(raw)
+			.take(MAX_SIZE)
+			.read_to_end(&mut data)?;
+		unpacked = data;
+		unpacked.as_slice()
+	} else {
+		raw
+	};
+	let mut r = Reader { data, pos: 0 };
+	if r.u8()? != 10 {
+		return Err(NbtError::NotCompound);
+	}
+	let name = r.raw_string()?;
+	let root = r.node(10, 0)?;
+	if r.pos != data.len() {
+		return Err(NbtError::Trailing);
+	}
+	Ok(Document { name, root, gzip })
+}
+
+/// Байты файла: тот же формат (сжатый или нет), что был при чтении.
+pub fn encode_document(doc: &Document) -> std::io::Result<Vec<u8>> {
+	let mut out = vec![10];
+	out.extend((doc.name.len() as u16).to_be_bytes());
+	out.extend_from_slice(&doc.name);
+	doc.root.write(&mut out);
+	if !doc.gzip {
+		return Ok(out);
+	}
+	use std::io::Write;
+	let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+	enc.write_all(&out)?;
+	enc.finish()
+}
+
 #[cfg(test)]
 pub mod tests {
 	use super::*;
@@ -191,6 +377,7 @@ pub mod tests {
 		Str(&'a str),
 		Compound(Vec<(&'a str, W<'a>)>),
 		Ints(Vec<i32>),
+		List(Vec<W<'a>>),
 	}
 
 	impl W<'_> {
@@ -202,6 +389,7 @@ pub mod tests {
 				Self::Str(_) => 8,
 				Self::Compound(_) => 10,
 				Self::Ints(_) => 11,
+				Self::List(_) => 9,
 			}
 		}
 
@@ -226,6 +414,13 @@ pub mod tests {
 					out.extend((v.len() as i32).to_be_bytes());
 					for i in v {
 						out.extend(i.to_be_bytes());
+					}
+				}
+				Self::List(items) => {
+					out.push(items.first().map_or(0, W::id));
+					out.extend((items.len() as i32).to_be_bytes());
+					for item in items {
+						item.write(out);
 					}
 				}
 			}
@@ -278,5 +473,48 @@ pub mod tests {
 		// Огромная длина массива при маленьком файле — ошибка, а не выделение памяти.
 		let bad = [10, 0, 0, 11, 0, 1, b'a', 0x7f, 0xff, 0xff, 0xff, 0];
 		assert!(parse(&bad).is_err());
+	}
+
+	#[test]
+	fn document_round_trip() {
+		let data = encode(W::Compound(vec![
+			("name", W::Str("Сервер 😀")),
+			("big", W::Long(-5)),
+			("ints", W::Ints(vec![1, 2, 3])),
+			("empty", W::List(vec![])),
+			(
+				"servers",
+				W::List(vec![W::Compound(vec![("acceptTextures", W::Byte(1))])]),
+			),
+		]));
+		let doc = parse_document(&data).unwrap();
+		assert!(!doc.gzip);
+		assert_eq!(encode_document(&doc).unwrap(), data);
+
+		let zipped = gzip(&data);
+		let doc = parse_document(&zipped).unwrap();
+		assert!(doc.gzip);
+		let again = encode_document(&doc).unwrap();
+		assert!(again.starts_with(&[0x1f, 0x8b]));
+		assert_eq!(parse_document(&again).unwrap(), doc);
+
+		let mut doc = parse_document(&data).unwrap();
+		assert!(doc.root.remove("big"));
+		assert!(!doc.root.remove("big"));
+		let smaller = encode_document(&doc).unwrap();
+		assert_eq!(smaller.len(), data.len() - (1 + 2 + 3 + 8));
+		assert!(parse_document(&smaller).unwrap().root.get("big").is_none());
+
+		assert!(matches!(
+			parse_document(&data[..data.len() - 1]),
+			Err(NbtError::Eof)
+		));
+		let mut trailing = data.clone();
+		trailing.push(0);
+		assert!(matches!(parse_document(&trailing), Err(NbtError::Trailing)));
+		assert!(matches!(
+			parse_document(&[8, 0, 0]),
+			Err(NbtError::NotCompound)
+		));
 	}
 }

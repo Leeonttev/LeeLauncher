@@ -20,6 +20,7 @@ import { formatDuration } from "@/lib/format";
 import { progressValue, statusOf, useInstances } from "@/lib/instances";
 import { instancePath, navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { ariaDeleteKey } from "@/lib/platform";
 
 export function InstanceCard({ instance }: { instance: Instance }) {
 	const { t } = useTranslation();
@@ -43,7 +44,7 @@ export function InstanceCard({ instance }: { instance: Instance }) {
 							ref={titleRef}
 							type="button"
 							data-link
-							aria-keyshortcuts="Delete"
+							aria-keyshortcuts={ariaDeleteKey}
 							className={cn("block max-w-full truncate text-sm/5 font-semibold", stretchedLink)}
 							onClick={() => navigate(instancePath(instance.id))}
 							onKeyDown={onLinkKeyDown(instance, status)}

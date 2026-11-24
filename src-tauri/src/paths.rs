@@ -26,6 +26,8 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Папка профиля WebView2 (localStorage, кэш): `%LOCALAPPDATA%\LeeLauncher`.
+/// WKWebView на macOS свою папку не выбирает, там функция не нужна.
+#[cfg(not(target_os = "macos"))]
 pub fn webview_data_dir() -> PathBuf {
 	match ACTIVE.get() {
 		Some((_, webview)) => webview.clone(),

@@ -5,6 +5,7 @@ import { linkFocusRing, onLinkKeyDown, stretchedLink } from "@/components/instan
 import { InstanceThumb } from "@/components/instances/instance-cover";
 import { InstanceMenuContent } from "@/components/instances/instance-menu";
 import { InstanceMeta } from "@/components/instances/instance-meta";
+import { VulnBadge } from "@/components/instances/vuln-badge";
 import { PlayButton } from "@/components/instances/play-button";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -16,6 +17,7 @@ import { statusOf, useInstances } from "@/lib/instances";
 import { versionLabel } from "@/lib/loaders";
 import { instancePath, navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { ariaDeleteKey } from "@/lib/platform";
 
 export function InstanceRow({ instance }: { instance: Instance }) {
 	const { t } = useTranslation();
@@ -40,15 +42,16 @@ export function InstanceRow({ instance }: { instance: Instance }) {
 							ref={titleRef}
 							type="button"
 							data-link
-							aria-keyshortcuts="Delete"
+							aria-keyshortcuts={ariaDeleteKey}
 							className={cn("block max-w-full truncate text-sm/5 font-semibold", stretchedLink)}
 							onClick={() => navigate(instancePath(instance.id))}
 							onKeyDown={onLinkKeyDown(instance, status)}
 						>
 							{instance.name}
 						</button>
-						<p className="truncate text-[13px]/[18px] text-muted-foreground">
-							{versionLabel(instance)}
+						<p className="flex min-w-0 items-center gap-1 text-[13px]/[18px] text-muted-foreground">
+							<span className="truncate">{versionLabel(instance)}</span>
+							<VulnBadge instance={instance} />
 						</p>
 					</div>
 					<InstanceMeta instance={instance} variant="row" className="w-52 shrink-0" />

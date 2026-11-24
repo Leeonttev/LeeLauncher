@@ -121,7 +121,7 @@ pub fn load(path: &Path) -> Loaded {
 
 pub fn save(path: &Path, file: &AccountsFile) -> io::Result<()> {
 	let json = serde_json::to_vec_pretty(file).map_err(io::Error::other)?;
-	fs_util::write_atomic(path, &json)
+	fs_util::write_private(path, &json)
 }
 
 #[cfg(test)]

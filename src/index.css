@@ -146,7 +146,7 @@
 	--input: #737378;
 	--control-track: #5a5a5f;
 	--control-track-hover: #8e8e93;
-	--field: #131315;
+	--field: #1f1f22;
 	--sidebar: #111113;
 	--sidebar-foreground: #f5f5f7;
 	--sidebar-accent: #28282c;
@@ -404,24 +404,25 @@ html[data-reduce-motion] .progress-indeterminate {
 		background: var(--foreground);
 		color: var(--background);
 	}
-	::-webkit-scrollbar {
+	/* На Mac свои полосы WebKit сделали бы постоянными и занимающими место (а `scrollbar-gutter` там только с Safari 18.2) — оставляем системные. */
+	:root:not([data-os="mac"]) ::-webkit-scrollbar {
 		width: 10px;
 		height: 10px;
 	}
-	::-webkit-scrollbar-track,
-	::-webkit-scrollbar-corner {
+	:root:not([data-os="mac"]) ::-webkit-scrollbar-track,
+	:root:not([data-os="mac"]) ::-webkit-scrollbar-corner {
 		background: transparent;
 	}
-	::-webkit-scrollbar-track {
+	:root:not([data-os="mac"]) ::-webkit-scrollbar-track {
 		margin-block: 14px;
 	}
-	::-webkit-scrollbar-thumb {
+	:root:not([data-os="mac"]) ::-webkit-scrollbar-thumb {
 		border: 3px solid transparent;
 		border-radius: 9999px;
 		background-color: var(--control-track);
 		background-clip: content-box;
 	}
-	::-webkit-scrollbar-thumb:hover {
+	:root:not([data-os="mac"]) ::-webkit-scrollbar-thumb:hover {
 		background-color: var(--control-track-hover);
 	}
 }

@@ -11,8 +11,10 @@ use url::Url;
 
 use super::api::AUTH_REPLY_URL;
 use super::error::{AuthError, Step};
+use crate::MAIN_WINDOW;
 use crate::lang::Lang;
-use crate::{MAIN_WINDOW, paths};
+#[cfg(not(target_os = "macos"))]
+use crate::paths;
 
 pub const LOGIN_WINDOW: &str = "microsoft-login";
 const WIDTH: f64 = 520.0;
@@ -162,8 +164,6 @@ pub async fn run(
 		.minimizable(false)
 		.focused(true)
 		.incognito(true)
-		// Та же папка WebView2, что у главного окна: другая папка создала бы второй профиль на диске.
-		.data_directory(paths::webview_data_dir())
 		.on_navigation(move |url| {
 			log::debug!(
 				"окно входа: переход на {}{}",
@@ -178,6 +178,12 @@ pub async fn run(
 				None => true,
 			}
 		});
+	// Та же папка WebView2, что у главного окна: другая папка создала бы второй профиль на диске.
+	// WKWebView папку не выбирает, приватность ему даёт `incognito`.
+	#[cfg(not(target_os = "macos"))]
+	{
+		builder = builder.data_directory(paths::webview_data_dir());
+	}
 
 	let main = app.get_webview_window(MAIN_WINDOW);
 	match main.as_ref().and_then(centered_over) {

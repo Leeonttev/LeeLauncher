@@ -203,6 +203,7 @@ async fn live_java_runtime() {
 		&l.layout.java_dir(),
 		Some("java-runtime-gamma"),
 		17,
+		Platform::current().arch,
 		Progress::silent(),
 		&CancellationToken::new(),
 		&|_| false,

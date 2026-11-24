@@ -58,7 +58,6 @@ enum RuntimeFile {
 	},
 	Directory,
 	Link {
-		#[allow(dead_code)]
 		target: String,
 	},
 }
@@ -73,6 +72,31 @@ struct RuntimeManifest {
 pub struct Marker {
 	pub component: String,
 	pub version: String,
+	/// Разрядность сборки; нет поля (скачано до появления) — родная для ОС.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub arch: Option<String>,
+}
+
+impl Marker {
+	pub fn arch(&self) -> &str {
+		match self.arch.as_deref() {
+			Some(arch) => arch,
+			None => host_arch(),
+		}
+	}
+}
+
+fn host_arch() -> &'static str {
+	crate::meta::rules::Platform::current().arch
+}
+
+/// Папка компонента: родная разрядность — `<компонент>`, другая (x64 на arm64) — `<компонент>-<arch>`.
+fn folder_name(component: &str, arch: &str) -> String {
+	if arch == host_arch() {
+		component.to_owned()
+	} else {
+		format!("{component}-{arch}")
+	}
 }
 
 /// Отметка папки Java; нет — папка не наша или недокачана.
@@ -81,16 +105,26 @@ pub fn marker(dir: &Path) -> Option<Marker> {
 	serde_json::from_slice(&bytes).ok()
 }
 
-/// Папка нашей Java по пути к `javaw.exe`: `<java>/<компонент>/bin/javaw.exe`.
+/// Папка нашей Java по пути к `java`: `<java>/<компонент>/bin/javaw.exe`, на macOS
+/// `<java>/<компонент>/jre.bundle/Contents/Home/bin/java`.
 pub fn home_of(java_path: &str, java_dir: &Path) -> Option<PathBuf> {
-	let home = Path::new(java_path).parent()?.parent()?;
 	let root = std::fs::canonicalize(java_dir).ok().map(super::simplify)?;
-	let real = std::fs::canonicalize(home).ok().map(super::simplify)?;
-	(real.parent() == Some(root.as_path())).then(|| home.to_path_buf())
+	Path::new(java_path)
+		.ancestors()
+		.skip(2)
+		.take(4)
+		.find(|home| {
+			std::fs::canonicalize(home)
+				.ok()
+				.map(super::simplify)
+				.is_some_and(|real| real.parent() == Some(root.as_path()))
+		})
+		.map(Path::to_path_buf)
 }
 
-/// Наша Java этой мажорной версии: папка и отметка.
-pub fn installed(java_dir: &Path, major: u32) -> Option<(PathBuf, Marker)> {
+/// Наша Java этой мажорной версии (и разрядности, если указана): папка и отметка.
+/// Родная разрядность — первой.
+pub fn installed(java_dir: &Path, major: u32, arch: Option<&str>) -> Option<(PathBuf, Marker)> {
 	let mut found: Vec<(PathBuf, Marker)> = std::fs::read_dir(java_dir)
 		.ok()?
 		.flatten()
@@ -98,8 +132,13 @@ pub fn installed(java_dir: &Path, major: u32) -> Option<(PathBuf, Marker)> {
 		.filter(|p| p.is_dir() && !is_hidden(p))
 		.filter_map(|p| marker(&p).map(|m| (p, m)))
 		.filter(|(_, m)| parse_major(&m.version) == Some(major))
+		.filter(|(_, m)| arch.is_none_or(|a| m.arch() == a))
 		.collect();
-	found.sort_by(|a, b| a.1.component.cmp(&b.1.component));
+	found.sort_by(|a, b| {
+		(b.1.arch() == host_arch())
+			.cmp(&(a.1.arch() == host_arch()))
+			.then_with(|| a.1.component.cmp(&b.1.component))
+	});
 	found.into_iter().next()
 }
 
@@ -109,10 +148,10 @@ pub fn is_hidden(dir: &Path) -> bool {
 		.is_some_and(|n| n.to_string_lossy().starts_with('.'))
 }
 
-/// Версия компонента в индексе для этой платформы.
-fn latest_in(index: &RuntimeIndex, component: &str) -> Option<String> {
+/// Версия компонента в индексе для этой ОС и разрядности.
+fn latest_in(index: &RuntimeIndex, component: &str, arch: &str) -> Option<String> {
 	index
-		.get(platform_key()?)?
+		.get(platform_key(arch)?)?
 		.get(component)?
 		.first()
 		.map(|e| e.version.name.clone())
@@ -127,7 +166,7 @@ pub fn update_cached(meta: &Meta, home: &Path) -> Option<String> {
 	let marker = marker(home)?;
 	let bytes = std::fs::read(meta.cache_path(INDEX_CACHE)).ok()?;
 	let index: RuntimeIndex = serde_json::from_slice(&bytes).ok()?;
-	newer(&marker, latest_in(&index, &marker.component))
+	newer(&marker, latest_in(&index, &marker.component, marker.arch()))
 }
 
 /// Есть ли новая версия нашей Java; индекс берётся из сети раз в сутки. Ошибки — «нет».
@@ -138,7 +177,7 @@ pub async fn update_available(
 ) -> Option<String> {
 	let marker = marker(home)?;
 	let index = load_index(meta, cancel).await.ok()?;
-	newer(&marker, latest_in(&index, &marker.component))
+	newer(&marker, latest_in(&index, &marker.component, marker.arch()))
 }
 
 async fn load_index(meta: &Meta, cancel: &CancellationToken) -> Result<RuntimeIndex, AppError> {
@@ -269,18 +308,63 @@ fn swap(target: &Path, staging: &Path, java_dir: &Path, name: &str) -> Result<()
 	Ok(())
 }
 
-/// Ключ платформы в индексе Mojang.
-fn platform_key() -> Option<&'static str> {
-	match (std::env::consts::OS, std::env::consts::ARCH) {
-		("windows", "x86_64") => Some("windows-x64"),
+/// Ключ платформы в индексе Mojang для этой ОС и разрядности Java (`x64`, `x86`, `arm64`).
+fn platform_key(arch: &str) -> Option<&'static str> {
+	match (std::env::consts::OS, arch) {
+		("windows", "x64") => Some("windows-x64"),
 		("windows", "x86") => Some("windows-x86"),
-		("windows", "aarch64") => Some("windows-arm64"),
-		("linux", "x86_64") => Some("linux"),
+		("windows", "arm64") => Some("windows-arm64"),
+		("linux", "x64") => Some("linux"),
 		("linux", "x86") => Some("linux-i386"),
-		("macos", "x86_64") => Some("mac-os"),
-		("macos", "aarch64") => Some("mac-os-arm64"),
+		("macos", "x64") => Some("mac-os"),
+		("macos", "arm64") => Some("mac-os-arm64"),
 		_ => None,
 	}
+}
+
+/// Ссылка из манифеста рантайма (`file` → `target`, путь от папки ссылки) не выводит из папки Java.
+fn link_inside(file: &str, target: &str) -> bool {
+	use std::path::Component;
+	if target.is_empty() || Path::new(target).has_root() {
+		return false;
+	}
+	let mut depth: usize = 0;
+	let parent = Path::new(file).parent().unwrap_or(Path::new(""));
+	for part in parent.components().chain(Path::new(target).components()) {
+		match part {
+			Component::Normal(_) => depth += 1,
+			Component::CurDir => {}
+			Component::ParentDir => {
+				let Some(up) = depth.checked_sub(1) else {
+					return false;
+				};
+				depth = up;
+			}
+			Component::RootDir | Component::Prefix(_) => return false,
+		}
+	}
+	true
+}
+
+#[cfg(unix)]
+fn make_links(links: &[(PathBuf, String)]) -> Result<(), AppError> {
+	for (path, target) in links {
+		if let Some(parent) = path.parent() {
+			std::fs::create_dir_all(parent)
+				.map_err(|e| AppError::storage(format!("{}: {e}", parent.display())))?;
+		}
+		if std::fs::symlink_metadata(path).is_ok() {
+			let _ = std::fs::remove_file(path);
+		}
+		std::os::unix::fs::symlink(target, path)
+			.map_err(|e| AppError::storage(format!("{}: {e}", path.display())))?;
+	}
+	Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_links(_links: &[(PathBuf, String)]) -> Result<(), AppError> {
+	Ok(())
 }
 
 /// Компонент для мажорной версии: указанный в описании версии игры, иначе первый с той же версией.
@@ -307,6 +391,38 @@ fn choose<'a>(
 	matches.into_iter().next()
 }
 
+/// Сборка Java в индексе: для этой разрядности, а если её нет на arm64 (Java 8 и 16 у Mojang
+/// только x64) — x64, она работает через эмуляцию.
+fn choose_build<'a>(
+	index: &'a RuntimeIndex,
+	component: Option<&str>,
+	major: u32,
+	arch: &str,
+) -> Result<(&'static str, &'a str, &'a RuntimeEntry), AppError> {
+	let not_found = |why: String| AppError::coded(ErrorCode::JavaNotFound, why);
+	let mut archs = vec![crate::meta::rules::normalize_arch(arch)];
+	if archs[0] == "arm64" {
+		archs.push("x64");
+	}
+	let mut last = None;
+	for arch in archs {
+		let Some(platform) = platform_key(arch) else {
+			continue;
+		};
+		last = Some(platform);
+		if let Some((name, entry)) = index
+			.get(platform)
+			.and_then(|components| choose(components, component, major))
+		{
+			return Ok((arch, name, entry));
+		}
+	}
+	Err(not_found(match last {
+		Some(platform) => format!("нет Java {major} для {platform}"),
+		None => format!("нет сборок Java для {} {arch}", std::env::consts::OS),
+	}))
+}
+
 pub fn is_complete(dir: &Path) -> bool {
 	dir.join(MARKER).is_file()
 }
@@ -321,25 +437,15 @@ pub async fn install(
 	java_dir: &Path,
 	component: Option<&str>,
 	major: u32,
+	arch: &str,
 	progress: Arc<Progress>,
 	cancel: &CancellationToken,
 	in_use: &(dyn Fn(&Path) -> bool + Sync),
 ) -> Result<JavaInstall, AppError> {
-	let not_found = |why: String| AppError::coded(ErrorCode::JavaNotFound, why);
-	let platform = platform_key().ok_or_else(|| {
-		not_found(format!(
-			"нет сборок Java для {} {}",
-			std::env::consts::OS,
-			std::env::consts::ARCH
-		))
-	})?;
 	let index = load_index(meta, cancel).await?;
-	let components = index
-		.get(platform)
-		.ok_or_else(|| not_found(format!("нет сборок Java для {platform}")))?;
-	let (name, entry) = choose(components, component, major)
-		.ok_or_else(|| not_found(format!("нет Java {major} для {platform}")))?;
-	log::info!("скачиваем Java {} ({name})", entry.version.name);
+	let (arch, name, entry) = choose_build(&index, component, major, arch)?;
+	log::info!("скачиваем Java {} ({name}, {arch})", entry.version.name);
+	let folder = folder_name(name, arch);
 
 	let bytes = dl
 		.bytes(&entry.manifest.url, Some(&entry.manifest.sha1), cancel)
@@ -347,7 +453,7 @@ pub async fn install(
 	let manifest: RuntimeManifest = serde_json::from_slice(&bytes)
 		.map_err(|e| AppError::coded(ErrorCode::DownloadFailed, format!("манифест Java: {e}")))?;
 
-	let target = java_dir.join(name);
+	let target = java_dir.join(&folder);
 	let marker_path = target.join(MARKER);
 	// Другая версия того же компонента: качаем рядом, прежняя работает до подмены.
 	let replace = marker(&target).is_some_and(|old| old.version != entry.version.name);
@@ -355,7 +461,7 @@ pub async fn install(
 		return Err(in_use_error(&target));
 	}
 	let work = if replace {
-		let staging = java_dir.join(format!("{STAGING_PREFIX}{name}"));
+		let staging = java_dir.join(format!("{STAGING_PREFIX}{folder}"));
 		if staging.exists() {
 			tokio::fs::remove_dir_all(&staging)
 				.await
@@ -369,6 +475,7 @@ pub async fn install(
 
 	let mut jobs = Vec::new();
 	let mut executables = Vec::new();
+	let mut links = Vec::new();
 	for (file, info) in &manifest.files {
 		let path = safe_join(&work, file).ok_or_else(|| {
 			AppError::coded(ErrorCode::DownloadFailed, format!("плохой путь: {file}"))
@@ -393,12 +500,21 @@ pub async fn install(
 					.await
 					.map_err(|e| AppError::storage(format!("{}: {e}", path.display())))?;
 			}
-			// Ссылки бывают только в сборках для macOS/Linux; на Windows их нет.
-			RuntimeFile::Link { .. } => {}
+			// Ссылки бывают только в сборках для macOS/Linux.
+			RuntimeFile::Link { target } => {
+				if !link_inside(file, target) {
+					return Err(AppError::coded(
+						ErrorCode::DownloadFailed,
+						format!("плохая ссылка: {file} → {target}"),
+					));
+				}
+				links.push((path, target.clone()));
+			}
 		}
 	}
 	dl.files(jobs, Verify::Hash, progress, cancel).await?;
 	set_executable(&executables);
+	make_links(&links)?;
 	if replace {
 		if in_use(&target) {
 			let _ = tokio::fs::remove_dir_all(&work).await;
@@ -408,7 +524,7 @@ pub async fn install(
 			target.clone(),
 			work.clone(),
 			java_dir.to_path_buf(),
-			name.to_owned(),
+			folder.clone(),
 		);
 		tokio::task::spawn_blocking(move || swap(&target, &work, &root, &folder))
 			.await
@@ -419,6 +535,7 @@ pub async fn install(
 	let marker = serde_json::to_vec(&Marker {
 		component: name.to_owned(),
 		version: entry.version.name.clone(),
+		arch: Some(arch.to_owned()),
 	})
 	.map_err(|e| AppError::unknown(e.to_string()))?;
 	fs_util::write_atomic(&marker_path, &marker)
@@ -485,6 +602,7 @@ mod tests {
 			let m = Marker {
 				component: name.trim_start_matches('.').to_owned(),
 				version: version.to_owned(),
+				arch: None,
 			};
 			std::fs::write(home.join(MARKER), serde_json::to_vec(&m).unwrap()).unwrap();
 			home
@@ -493,16 +611,27 @@ mod tests {
 		write(".old-java-runtime-gamma-1", "17.0.8");
 		std::fs::create_dir_all(dir.path().join("half")).unwrap();
 
-		let (home, m) = installed(dir.path(), 21).unwrap();
+		let (home, m) = installed(dir.path(), 21, None).unwrap();
 		assert_eq!(home, delta);
 		assert_eq!(m.component, "java-runtime-delta");
-		assert!(installed(dir.path(), 17).is_none());
-		assert!(installed(dir.path(), 8).is_none());
+		assert_eq!(m.arch(), host_arch());
+		assert!(installed(dir.path(), 21, Some(host_arch())).is_some());
+		assert!(installed(dir.path(), 21, Some("x86")).is_none());
+		assert!(installed(dir.path(), 17, None).is_none());
+		assert!(installed(dir.path(), 8, None).is_none());
 
 		let java = delta.join("bin").join("javaw.exe");
 		std::fs::write(&java, b"").unwrap();
 		assert_eq!(
 			home_of(&java.to_string_lossy(), dir.path()).as_deref(),
+			Some(delta.as_path())
+		);
+		// Раскладка macOS: jre.bundle/Contents/Home/bin/java.
+		let bundle = delta.join("jre.bundle/Contents/Home/bin");
+		std::fs::create_dir_all(&bundle).unwrap();
+		std::fs::write(bundle.join("java"), b"").unwrap();
+		assert_eq!(
+			home_of(&bundle.join("java").to_string_lossy(), dir.path()).as_deref(),
 			Some(delta.as_path())
 		);
 		let outside = tempfile::tempdir().unwrap();
@@ -511,21 +640,21 @@ mod tests {
 		assert!(home_of(&foreign.to_string_lossy(), dir.path()).is_none());
 
 		let index: RuntimeIndex = serde_json::from_value(json!({
-			platform_key().unwrap(): {
+			platform_key(host_arch()).unwrap(): {
 				"java-runtime-delta": [{ "manifest": { "sha1": "b", "size": 1, "url": "u2" }, "version": { "name": "21.0.7" } }]
 			}
 		}))
 		.unwrap();
 		assert_eq!(
-			newer(&m, latest_in(&index, &m.component)).as_deref(),
+			newer(&m, latest_in(&index, &m.component, m.arch())).as_deref(),
 			Some("21.0.7")
 		);
 		let current = Marker {
 			version: "21.0.7".into(),
 			..m.clone()
 		};
-		assert!(newer(&current, latest_in(&index, &m.component)).is_none());
-		assert!(latest_in(&index, "jre-legacy").is_none());
+		assert!(newer(&current, latest_in(&index, &m.component, m.arch())).is_none());
+		assert!(latest_in(&index, "jre-legacy", host_arch()).is_none());
 	}
 
 	#[test]
@@ -596,6 +725,63 @@ mod tests {
 		// Без отметки не возвращаем и не удаляем.
 		assert!(partial.is_dir());
 		assert!(!dir.path().join("java-runtime-gamma").exists());
+	}
+
+	#[test]
+	fn falls_back_to_x64_on_arm64() {
+		if std::env::consts::OS != "macos" {
+			return;
+		}
+		let index: RuntimeIndex = serde_json::from_value(json!({
+			"mac-os": {
+				"jre-legacy": [{ "manifest": { "sha1": "c", "size": 1, "url": "u3" }, "version": { "name": "8u74" } }],
+				"java-runtime-gamma": [{ "manifest": { "sha1": "a", "size": 1, "url": "u1" }, "version": { "name": "17.0.15" } }]
+			},
+			"mac-os-arm64": {
+				"jre-legacy": [],
+				"java-runtime-gamma": [{ "manifest": { "sha1": "a", "size": 1, "url": "u2" }, "version": { "name": "17.0.15" } }]
+			}
+		}))
+		.unwrap();
+		let (arch, name, entry) = choose_build(&index, Some("jre-legacy"), 8, "arm64").unwrap();
+		assert_eq!((arch, name), ("x64", "jre-legacy"));
+		assert_eq!(entry.manifest.url, "u3");
+		let (arch, _, entry) =
+			choose_build(&index, Some("java-runtime-gamma"), 17, "arm64").unwrap();
+		assert_eq!((arch, entry.manifest.url.as_str()), ("arm64", "u2"));
+		let (arch, _, _) = choose_build(&index, None, 17, "x64").unwrap();
+		assert_eq!(arch, "x64");
+		assert!(choose_build(&index, None, 21, "x64").is_err());
+	}
+
+	#[test]
+	fn folders_by_arch() {
+		assert_eq!(folder_name("jre-legacy", host_arch()), "jre-legacy");
+		assert_eq!(folder_name("jre-legacy", "x86"), "jre-legacy-x86");
+	}
+
+	#[test]
+	fn checks_links() {
+		assert!(link_inside(
+			"jre.bundle/Contents/MacOS/libjli.dylib",
+			"../Home/lib/libjli.dylib"
+		));
+		assert!(link_inside("a/b", "c"));
+		assert!(!link_inside("a/b", "../../x"));
+		assert!(!link_inside("a", "/etc/passwd"));
+		assert!(!link_inside("a", ""));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn makes_links() {
+		let dir = tempfile::tempdir().unwrap();
+		std::fs::create_dir_all(dir.path().join("Home/lib")).unwrap();
+		std::fs::write(dir.path().join("Home/lib/x"), b"x").unwrap();
+		let link = dir.path().join("MacOS/x");
+		make_links(&[(link.clone(), "../Home/lib/x".into())]).unwrap();
+		make_links(&[(link.clone(), "../Home/lib/x".into())]).unwrap();
+		assert_eq!(std::fs::read(&link).unwrap(), b"x");
 	}
 
 	#[test]

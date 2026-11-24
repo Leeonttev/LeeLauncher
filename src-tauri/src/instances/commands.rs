@@ -328,7 +328,7 @@ pub async fn java_check(l: L<'_>, path: String) -> Result<JavaInstall, AppError>
 	java::check(PathBuf::from(path), l.layout.java_dir()).await
 }
 
-/// Системное окно выбора java.exe; выбранное сразу проверяется.
+/// Системное окно выбора Java; выбранное сразу проверяется.
 #[tauri::command]
 pub async fn java_pick_file(
 	app: AppHandle,
@@ -382,7 +382,7 @@ pub async fn java_install(app: AppHandle, l: L<'_>, major: u32) -> Result<JavaIn
 /// Нашей Java этой версии нет — `java_not_found`, ею пользуется игра — `file_in_use`.
 #[tauri::command]
 pub async fn java_update(app: AppHandle, l: L<'_>, major: u32) -> Result<JavaInstall, AppError> {
-	let Some((home, _)) = java::runtime::installed(&l.layout.java_dir(), major) else {
+	let Some((home, _)) = java::runtime::installed(&l.layout.java_dir(), major, None) else {
 		return Err(AppError::coded(
 			ErrorCode::JavaNotFound,
 			format!("Java {major}"),
@@ -441,9 +441,13 @@ fn start_java(
 				_ = cancel.cancelled() => return Err(AppError::new(ErrorCode::Cancelled)),
 				g = l.java_lock.lock() => g,
 			};
-			// Наша Java этой версии уже есть — обновляем тот же компонент.
-			let component = java::runtime::installed(&l.layout.java_dir(), major)
-				.map(|(_, marker)| marker.component);
+			// Наша Java этой версии уже есть — обновляем тот же компонент той же разрядности.
+			let installed = java::runtime::installed(&l.layout.java_dir(), major, None);
+			let arch = installed.as_ref().map_or_else(
+				|| crate::meta::rules::Platform::current().arch.to_owned(),
+				|(_, marker)| marker.arch().to_owned(),
+			);
+			let component = installed.map(|(_, marker)| marker.component);
 			let in_use = |dir: &std::path::Path| l.games.java_in_use(dir);
 			java::runtime::install(
 				&l.meta,
@@ -451,6 +455,7 @@ fn start_java(
 				&l.layout.java_dir(),
 				component.as_deref(),
 				major,
+				&arch,
 				progress.clone(),
 				&cancel,
 				&in_use,

@@ -36,6 +36,8 @@ pub struct LaunchContext<'a> {
 	pub natives_dir: &'a Path,
 	/// Конфиг логов log4j (уже на диске) — подставляется в `logging.client.argument`.
 	pub log_config: Option<&'a Path>,
+	/// Значок Dock на macOS (`icons/minecraft.icns` из ассетов).
+	pub dock_icon: Option<&'a Path>,
 	pub memory: Memory,
 	pub resolution: Option<Resolution>,
 	pub user_jvm_args: &'a [String],
@@ -277,6 +279,12 @@ pub fn build(ctx: &LaunchContext) -> Args {
 		}
 	}
 	expand(json_jvm, ctx.platform, &features, &vars, &mut out);
+	if ctx.platform.os == "osx" {
+		out.push("-Xdock:name=Minecraft".to_owned());
+		if let Some(icon) = ctx.dock_icon {
+			out.push(format!("-Xdock:icon={}", path_text(icon)));
+		}
+	}
 	out.push(format!("-Xms{}M", ctx.memory.min_mb));
 	out.push(format!("-Xmx{}M", ctx.memory.max_mb));
 	// Иначе Java на русской Windows пишет в cp1251 (8–17 — `sun.*`, 18+ — без префикса).
@@ -488,14 +496,15 @@ mod tests {
 	}
 
 	fn paths() -> Paths {
-		let root = PathBuf::from(r"C:\Data\LeeLauncher");
+		let root = std::env::temp_dir().join("Data").join("LeeLauncher");
+		let path = |parts: &[&str]| parts.iter().fold(root.clone(), |p, part| p.join(part));
 		Paths {
-			client: root.join(r"meta\versions\1.20.1\1.20.1.jar"),
-			game: root.join(r"instances\abc\minecraft"),
-			assets: root.join(r"meta\assets"),
-			libs: root.join(r"meta\libraries"),
-			natives: root.join(r"meta\natives\1.20.1-forge-47.4.0"),
-			log: root.join(r"meta\assets\log_configs\client-1.12.xml"),
+			client: path(&["meta", "versions", "1.20.1", "1.20.1.jar"]),
+			game: path(&["instances", "abc", "minecraft"]),
+			assets: path(&["meta", "assets"]),
+			libs: path(&["meta", "libraries"]),
+			natives: path(&["meta", "natives", "1.20.1-forge-47.4.0"]),
+			log: path(&["meta", "assets", "log_configs", "client-1.12.xml"]),
 		}
 	}
 
@@ -520,6 +529,7 @@ mod tests {
 			libraries_dir: &p.libs,
 			natives_dir: &p.natives,
 			log_config: Some(&p.log),
+			dock_icon: None,
 			memory: Memory {
 				min_mb: 512,
 				max_mb: 4096,
@@ -617,7 +627,7 @@ mod tests {
 		assert!(!jvm.iter().any(|a| a == "-XstartOnFirstThread"));
 		assert_eq!(
 			jvm[1],
-			r"-Djava.library.path=C:\Data\LeeLauncher\meta\natives\1.20.1-forge-47.4.0"
+			format!("-Djava.library.path={}", p.natives.display())
 		);
 		assert_eq!(jvm[2], "-Dminecraft.launcher.brand=LeeLauncher");
 		assert_eq!(
@@ -631,23 +641,18 @@ mod tests {
 		);
 		// Клиент исключён из модулей по имени своего файла.
 		assert!(jvm.contains(&"-DignoreList=bootstraplauncher,forge-,1.20.1.jar".to_owned()));
-		assert!(jvm.contains(&r"-DlibraryDirectory=C:\Data\LeeLauncher\meta\libraries".to_owned()));
+		assert!(jvm.contains(&format!("-DlibraryDirectory={}", p.libs.display())));
 		assert!(jvm.contains(&"-DFabricMcEmu= net.minecraft.client.main.Main ".to_owned()));
 		assert!(jvm.contains(&"-Xms512M".to_owned()));
 		assert!(jvm.contains(&"-Xmx4096M".to_owned()));
-		assert!(jvm.contains(
-			&r"-Dlog4j.configurationFile=C:\Data\LeeLauncher\meta\assets\log_configs\client-1.12.xml"
-				.to_owned()
-		));
+		assert!(jvm.contains(&format!("-Dlog4j.configurationFile={}", p.log.display())));
+		assert!(!jvm.iter().any(|a| a.starts_with("-Xdock")));
 		// Свои аргументы — последними среди JVM, чтобы перекрывать остальные.
 		assert_eq!(&jvm[jvm.len() - 2..], ["-XX:+UseG1GC", "-Dname=a b"]);
 
 		assert_eq!(after(game, "--username"), "Steve Jr");
 		assert_eq!(after(game, "--version"), "1.20.1-forge-47.4.0");
-		assert_eq!(
-			after(game, "--gameDir"),
-			r"C:\Data\LeeLauncher\instances\abc\minecraft"
-		);
+		assert_eq!(after(game, "--gameDir"), p.game.display().to_string());
 		assert_eq!(after(game, "--assetIndex"), "5");
 		assert_eq!(after(game, "--uuid"), "b50ad385829d3141a2167e7d7539ba7f");
 		assert_eq!(
@@ -710,9 +715,7 @@ mod tests {
 			.unwrap();
 		let (jvm, game) = (&args[..main], &args[main + 1..]);
 		assert!(jvm[0].starts_with("-XX:HeapDumpPath="));
-		assert!(jvm.contains(
-			&r"-Djava.library.path=C:\Data\LeeLauncher\meta\natives\1.20.1-forge-47.4.0".to_owned()
-		));
+		assert!(jvm.contains(&format!("-Djava.library.path={}", p.natives.display())));
 		assert!(jvm.contains(&"-Dminecraft.launcher.brand=LeeLauncher".to_owned()));
 		assert_eq!(
 			after(jvm, "-cp"),
@@ -729,6 +732,36 @@ mod tests {
 			["--width", "1024", "--height", "768"]
 		);
 		assert!(!args.iter().any(|a| a.contains("${")));
+	}
+
+	#[test]
+	fn mac_args() {
+		const MAC: Platform = Platform {
+			os: "osx",
+			arch: "arm64",
+		};
+		let p = paths();
+		let creds = creds("0", "legacy");
+		let icon = p.assets.join("objects").join("ab").join("abcd");
+
+		let info = modern();
+		let mut c = ctx(&info, &p, &creds, &[], &[], None);
+		c.platform = MAC;
+		c.dock_icon = Some(&icon);
+		let jvm = build(&c).jvm;
+		assert_eq!(jvm[0], "-XstartOnFirstThread");
+		assert!(!jvm.iter().any(|a| a.starts_with("-XX:HeapDumpPath")));
+		assert!(jvm.contains(&"-Xdock:name=Minecraft".to_owned()));
+		assert!(jvm.contains(&format!("-Xdock:icon={}", icon.display())));
+
+		// Старый формат: без -XstartOnFirstThread (LWJGL 2 с ним зависает), значок только если есть.
+		let info = legacy();
+		let mut c = ctx(&info, &p, &creds, &[], &[], None);
+		c.platform = MAC;
+		let jvm = build(&c).jvm;
+		assert!(!jvm.iter().any(|a| a == "-XstartOnFirstThread"));
+		assert!(jvm.contains(&"-Xdock:name=Minecraft".to_owned()));
+		assert!(!jvm.iter().any(|a| a.starts_with("-Xdock:icon")));
 	}
 
 	#[test]

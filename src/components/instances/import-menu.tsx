@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePendingAction } from "@/hooks/use-pending-action";
 import { pickModpackFile } from "@/lib/modpacks";
+import { shortcutLabel } from "@/lib/platform";
 
 /** Действие — после закрытия меню. */
 export function ImportMenu({ align = "end" }: { align?: "start" | "center" | "end" }) {
@@ -33,7 +34,7 @@ export function ImportMenu({ align = "end" }: { align?: "start" | "center" | "en
 					<Package />
 					{t("instances.import.file")}
 					<DropdownMenuShortcut className="text-[13px] tracking-normal">
-						{t("instances.import.shortcut")}
+						{shortcutLabel("O")}
 					</DropdownMenuShortcut>
 				</DropdownMenuItem>
 			</DropdownMenuContent>

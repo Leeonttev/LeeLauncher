@@ -493,7 +493,8 @@ mod tests {
 	#[test]
 	fn names() {
 		let name = |text: &str| display_name(Path::new(text));
-		assert_eq!(name(r"C:\skins\Рыцарь.png"), "Рыцарь");
+		let full = std::env::temp_dir().join("skins").join("Рыцарь.png");
+		assert_eq!(display_name(&full), "Рыцарь");
 		assert_eq!(name("Knight.PNG"), "Knight");
 		assert_eq!(name("a.b.png"), "a.b");
 		assert_eq!(name("noext"), "noext");

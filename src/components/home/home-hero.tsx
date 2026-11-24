@@ -16,6 +16,7 @@ import { openCreateInstanceDialog } from "@/lib/instances";
 import { versionLabel } from "@/lib/loaders";
 import { instancePath, navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { ariaShortcut, shortcutLabel } from "@/lib/platform";
 
 const bannerFocusRing =
 	"has-[button[data-link]:focus-visible]:outline-2 has-[button[data-link]:focus-visible]:outline-offset-2 has-[button[data-link]:focus-visible]:outline-ring";
@@ -204,7 +205,7 @@ export function HomeHeroEmpty({ greeting, secondary }: { greeting: string; secon
 					{secondary ? (
 						<button
 							type="button"
-							aria-keyshortcuts="Control+N"
+							aria-keyshortcuts={ariaShortcut("N")}
 							className={cn(onCoverButton, "h-11 px-6 text-[15px]")}
 							onClick={(e) => create(e.currentTarget)}
 						>
@@ -212,7 +213,7 @@ export function HomeHeroEmpty({ greeting, secondary }: { greeting: string; secon
 						</button>
 					) : (
 						<Button
-							aria-keyshortcuts="Control+N"
+							aria-keyshortcuts={ariaShortcut("N")}
 							size="xl"
 							onClick={(e) => create(e.currentTarget)}
 						>
@@ -220,7 +221,7 @@ export function HomeHeroEmpty({ greeting, secondary }: { greeting: string; secon
 						</Button>
 					)}
 				</TooltipTrigger>
-				<TooltipContent>{t("instances.createShortcut")}</TooltipContent>
+				<TooltipContent>{t("instances.createShortcut", { keys: shortcutLabel("N") })}</TooltipContent>
 			</Tooltip>
 		</section>
 	);

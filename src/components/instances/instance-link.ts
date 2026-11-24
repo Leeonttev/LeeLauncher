@@ -1,6 +1,7 @@
 import type { KeyboardEvent } from "react";
 import type { Instance } from "@/lib/api";
 import { isBusy, openInstanceDialog, type InstanceStatus } from "@/lib/instances";
+import { isDeleteKey } from "@/lib/platform";
 
 /** `::after` названия накрывает весь блок (ближайший `relative`); то, что должно нажиматься, — `z-10`. */
 export const stretchedLink =
@@ -15,7 +16,7 @@ export const coverFocusRing =
 
 export function onLinkKeyDown(instance: Instance, status: InstanceStatus) {
 	return (event: KeyboardEvent<HTMLButtonElement>) => {
-		if (event.key === "Delete" && !isBusy(status)) {
+		if (isDeleteKey(event) && !isBusy(status)) {
 			event.preventDefault();
 			openInstanceDialog("remove", instance.id, { returnFocus: event.currentTarget });
 		}

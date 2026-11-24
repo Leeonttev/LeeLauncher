@@ -1,6 +1,7 @@
 //! Сборки: список, создание, изменение, удаление, копирование.
 
 pub mod commands;
+pub mod fresh;
 pub mod install;
 #[cfg(test)]
 pub(crate) mod live_tests;
@@ -232,6 +233,10 @@ pub struct Instance {
 	/// Сборка перенесена из другого лаунчера (по этому «Уже перенесена»).
 	#[serde(default)]
 	pub imported_from: Option<crate::modpacks::launchers::ImportedFrom>,
+	/// В установленном описании версии уязвимый `lwjgl-freetype`. Считается по описанию на диске,
+	/// в `instance.json` не хранится.
+	#[serde(default, skip_deserializing)]
+	pub font_vulnerable: bool,
 }
 
 /// Заглушка до [`load_one`], который ставит обложку из файла или по id.
@@ -394,7 +399,11 @@ fn write_instance(path: &Path, instance: &Instance) -> Result<(), AppError> {
 		cover: None,
 		instance: stored,
 	};
-	let json = serde_json::to_vec_pretty(&file).map_err(|e| AppError::storage(e.to_string()))?;
+	let mut value = serde_json::to_value(&file).map_err(|e| AppError::storage(e.to_string()))?;
+	if let Some(map) = value.as_object_mut() {
+		map.remove("fontVulnerable");
+	}
+	let json = serde_json::to_vec_pretty(&value).map_err(|e| AppError::storage(e.to_string()))?;
 	fs_util::write_atomic(path, &json)
 		.map_err(|e| AppError::storage(format!("{}: {e}", path.display())))
 }
@@ -444,6 +453,7 @@ pub struct Instances {
 	tasks: std::sync::Mutex<HashMap<String, Activity>>,
 	/// Недоудалённые и недокопированные папки с прошлого запуска; удаляются в фоне.
 	leftovers: std::sync::Mutex<Vec<PathBuf>>,
+	font: fresh::FontCache,
 }
 
 impl Instances {
@@ -473,6 +483,7 @@ impl Instances {
 			items: Mutex::new(items),
 			tasks: std::sync::Mutex::new(HashMap::new()),
 			leftovers: std::sync::Mutex::new(leftovers),
+			font: fresh::FontCache::default(),
 		}
 	}
 
@@ -496,6 +507,12 @@ impl Instances {
 		if self.is_installing(&instance.id) {
 			instance.install_state = InstallState::Installing;
 		}
+		instance.font_vulnerable = match (&instance.installed, instance.install_state) {
+			(Some(installed), InstallState::Installed) => {
+				self.font.vulnerable(&self.layout, &installed.version_id)
+			}
+			_ => false,
+		};
 		instance
 	}
 
@@ -550,6 +567,7 @@ impl Instances {
 			installed: None,
 			modpack: None,
 			imported_from: None,
+			font_vulnerable: false,
 		};
 		let game_dir = self.layout.game_dir(&id);
 		std::fs::create_dir_all(&game_dir)
@@ -1329,6 +1347,47 @@ mod tests {
 		std::fs::write(&path, text).unwrap();
 		let reloaded = Instances::load(layout);
 		assert_eq!(reloaded.list().await[0].install_state, InstallState::Failed);
+	}
+
+	#[tokio::test]
+	async fn font_vulnerable_is_computed_not_stored() {
+		let dir = tempfile::tempdir().unwrap();
+		let layout = Layout::new(dir.path().to_path_buf());
+		let instances = Instances::load(layout.clone());
+		let created = instances
+			.create("x", "1.21.4", vanilla(), None, None)
+			.await
+			.unwrap();
+		assert!(!created.font_vulnerable);
+		let json =
+			serde_json::json!({ "libraries": [ { "name": "org.lwjgl:lwjgl-freetype:3.3.3" } ] });
+		fs_util::write_atomic(&layout.version_json("1.21.4"), json.to_string().as_bytes()).unwrap();
+		// Не установлена — не уязвима, даже если описание есть.
+		assert!(!instances.get(&created.id).await.unwrap().font_vulnerable);
+		let installed = instances
+			.modify(&created.id, |i| {
+				i.install_state = InstallState::Installed;
+				i.installed = Some(Installed {
+					version_id: "1.21.4".into(),
+					java_major: 21,
+				});
+				Ok(())
+			})
+			.await
+			.unwrap();
+		assert!(installed.font_vulnerable);
+		let sent = serde_json::to_value(&installed).unwrap();
+		assert_eq!(sent["fontVulnerable"], true);
+		let text =
+			std::fs::read_to_string(layout.instance_dir(&created.id).join(FILE_NAME)).unwrap();
+		assert!(!text.contains("fontVulnerable"));
+		let reloaded = Instances::load(layout.clone());
+		assert!(reloaded.list().await[0].font_vulnerable);
+
+		let fixed = serde_json::json!({ "libraries": [ { "name": "org.lwjgl:lwjgl-freetype:3.4.3-mojang-2.15.0" } ] });
+		fs_util::write_atomic(&layout.version_json("1.21.4"), fixed.to_string().as_bytes())
+			.unwrap();
+		assert!(!reloaded.list().await[0].font_vulnerable);
 	}
 
 	#[tokio::test]

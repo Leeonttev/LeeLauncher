@@ -73,6 +73,7 @@ import { useInstanceWorlds } from "@/lib/worlds";
 import { PROJECT_GRID, ProjectOverview } from "@/pages/catalog/project-description";
 import { ProjectGallery } from "@/pages/catalog/project-gallery";
 import { ProjectVersions } from "@/pages/catalog/project-versions";
+import { ariaBackShortcut, isBackShortcut } from "@/lib/platform";
 
 type Tab = "description" | "versions" | "gallery";
 
@@ -132,7 +133,7 @@ export function ProjectPage() {
 
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.altKey && event.key === "ArrowLeft") {
+			if (isBackShortcut(event)) {
 				event.preventDefault();
 				goBack("/catalog");
 			}
@@ -186,7 +187,7 @@ function BackButton() {
 			variant="ghost"
 			size="sm"
 			className="-ml-3 self-start"
-			aria-keyshortcuts="Alt+ArrowLeft"
+			aria-keyshortcuts={ariaBackShortcut}
 			onClick={() => goBack("/catalog")}
 		>
 			<ArrowLeft />

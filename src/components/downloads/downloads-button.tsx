@@ -12,6 +12,7 @@ import {
 	useDownloadsShortcut,
 } from "@/lib/downloads";
 import { cn } from "@/lib/utils";
+import { ariaShortcut, shortcutLabel } from "@/lib/platform";
 
 export function DownloadsButton() {
 	const { t } = useTranslation();
@@ -43,7 +44,7 @@ export function DownloadsButton() {
 						<button
 							type="button"
 							aria-label={label}
-							aria-keyshortcuts="Control+J"
+							aria-keyshortcuts={ariaShortcut("J")}
 							className={cn(
 								"group/dl relative flex size-9 items-center justify-center rounded-full transition-[color,background-color,scale] duration-(--duration-fast) ease-out hover:bg-sidebar-accent hover:text-foreground active:scale-[0.98] aria-expanded:bg-sidebar-accent",
 								active
@@ -92,7 +93,7 @@ export function DownloadsButton() {
 				</TooltipTrigger>
 				<TooltipContent side="bottom" sideOffset={6}>
 					{label}
-					<span className="ml-2 opacity-70">{t("downloads.shortcut")}</span>
+					<span className="ml-2 opacity-70">{shortcutLabel("J")}</span>
 				</TooltipContent>
 			</Tooltip>
 			<DownloadsPanel />

@@ -1,7 +1,8 @@
 //! Библиотека скинов: `skins/library.json` и файлы `skins/<id>.png`. Сеть здесь не нужна.
 //! Старые записи `worn` (версия 1) не читаются и исчезают при следующей записи.
+//! Версия 3: у скина есть происхождение и история «где был надет»; записи версии 2 — загруженные.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -14,12 +15,14 @@ use serde_json::Value;
 
 use super::png::{self, Rejection};
 use super::textures::safe_key;
-use super::{RejectReason, RejectedFile, SkinEntry, SkinModel, SkinPatch, SkinsAdded};
+use super::{
+	RejectReason, RejectedFile, SkinEntry, SkinModel, SkinOrigin, SkinPatch, SkinSeen, SkinsAdded,
+};
 use crate::error::{AppError, ErrorCode};
 use crate::fs_util;
 
 const FILE_NAME: &str = "library.json";
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 const RECOVERED_NAME: &str = "skin";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +36,9 @@ struct LibraryFile {
 	/// Ключ текстуры Mojang → скин, загруженный через лаунчер.
 	#[serde(default)]
 	keys: BTreeMap<String, String>,
+	/// Скины, которые пользователь убрал из истории: сами они туда больше не возвращаются.
+	#[serde(default)]
+	dismissed: BTreeSet<String>,
 }
 
 impl Default for LibraryFile {
@@ -41,6 +47,7 @@ impl Default for LibraryFile {
 			version: CURRENT_VERSION,
 			skins: Vec::new(),
 			keys: BTreeMap::new(),
+			dismissed: BTreeSet::new(),
 		}
 	}
 }
@@ -54,6 +61,40 @@ struct StoredSkin {
 	#[serde(default)]
 	legacy: bool,
 	added_at: String,
+	#[serde(default)]
+	origin: SkinOrigin,
+	#[serde(default)]
+	seen: Vec<SkinSeen>,
+}
+
+impl StoredSkin {
+	/// Отметка «надет на аккаунте сейчас». `true` — аккаунт в истории скина впервые.
+	fn note_seen(&mut self, account_id: &str, now: &str) -> bool {
+		if let Some(seen) = self.seen.iter_mut().find(|s| s.account_id == account_id) {
+			seen.last_seen_at = now.to_owned();
+			return false;
+		}
+		self.seen.push(SkinSeen {
+			account_id: account_id.to_owned(),
+			first_seen_at: now.to_owned(),
+			last_seen_at: now.to_owned(),
+		});
+		true
+	}
+
+	/// Был ли скин на каком-нибудь аккаунте: удалённый такой скин иначе сразу вернётся в историю.
+	fn was_worn(&self) -> bool {
+		self.origin == SkinOrigin::Account || !self.seen.is_empty()
+	}
+}
+
+/// Итог `record_worn`.
+#[derive(Debug, Default)]
+pub struct Recorded {
+	/// Скин впервые попал в библиотеку.
+	pub added: Option<SkinEntry>,
+	/// Библиотека изменилась так, что фронту стоит её перечитать.
+	pub changed: bool,
 }
 
 impl LibraryFile {
@@ -71,6 +112,8 @@ struct RawFile {
 	skins: Vec<Value>,
 	#[serde(default)]
 	keys: BTreeMap<String, Value>,
+	#[serde(default)]
+	dismissed: Vec<Value>,
 }
 
 struct ParsedIndex {
@@ -116,11 +159,19 @@ impl RawFile {
 			.into_iter()
 			.filter_map(|(key, id)| Some((key, id.as_str()?.to_owned())))
 			.collect();
+		let dismissed = self
+			.dismissed
+			.iter()
+			.filter_map(Value::as_str)
+			.filter(|id| fs_util::is_sha1_hex(id))
+			.map(str::to_owned)
+			.collect();
 		ParsedIndex {
 			file: LibraryFile {
 				version: self.version.max(CURRENT_VERSION),
 				skins,
 				keys,
+				dismissed,
 			},
 			names,
 			damaged,
@@ -149,6 +200,8 @@ fn entry(skin: &StoredSkin, texture: String) -> SkinEntry {
 		model: skin.model,
 		legacy: skin.legacy,
 		added_at: skin.added_at.clone(),
+		origin: skin.origin,
+		seen: skin.seen.clone(),
 		texture,
 	}
 }
@@ -268,6 +321,8 @@ impl Library {
 						model: skin.model,
 						legacy: skin.legacy,
 						added_at,
+						origin: SkinOrigin::Upload,
+						seen: Vec::new(),
 					});
 				}
 				_ => log::warn!("не удалось восстановить скин: {}", path.display()),
@@ -385,17 +440,20 @@ impl Library {
 			.ok_or_else(not_found)
 	}
 
-	/// Скин из готовых байт (текстура из кэша). Такой уже есть — та же запись, имя не меняется.
+	/// Текущий скин аккаунта по просьбе пользователя (текстура из кэша). Имя — `name`, если скина ещё нет;
+	/// убранный из истории возвращается.
 	pub fn add_bytes(
 		&self,
 		bytes: &[u8],
 		name: &str,
 		key: Option<&str>,
+		account_id: &str,
 	) -> Result<SkinEntry, AppError> {
 		let skin = png::parse(bytes).map_err(|_| not_found())?;
 		let name = png::clean_name(name).unwrap_or_else(|| RECOVERED_NAME.to_owned());
 		let path = self.png_path(&skin.id)?;
 		let texture = data_url(&skin.png);
+		let now = now_iso();
 		self.update(|file| {
 			if !path.exists() {
 				fs_util::write_atomic(&path, &skin.png).map_err(|err| storage(&path, err))?;
@@ -403,6 +461,7 @@ impl Library {
 			if let Some(key) = key.filter(|key| safe_key(key)) {
 				file.keys.insert(key.to_owned(), skin.id.clone());
 			}
+			file.dismissed.remove(&skin.id);
 			if file.find(&skin.id).is_none() {
 				file.skins.insert(
 					0,
@@ -411,13 +470,92 @@ impl Library {
 						name,
 						model: skin.model,
 						legacy: skin.legacy,
-						added_at: now_iso(),
+						added_at: now.clone(),
+						origin: SkinOrigin::Account,
+						seen: Vec::new(),
 					},
 				);
 			}
-			let stored = file.find(&skin.id).ok_or_else(not_found)?;
+			let stored = file
+				.skins
+				.iter_mut()
+				.find(|stored| stored.id == skin.id)
+				.ok_or_else(not_found)?;
+			stored.note_seen(account_id, &now);
 			Ok(entry(stored, texture))
 		})
+	}
+
+	/// Скин, увиденный на аккаунте: новый попадает в историю (`origin: account`, имя пустое),
+	/// у известного обновляется `seen`. Убранные пользователем не возвращаются.
+	/// Скин ищется по ключу текстуры (Mojang мог пересохранить загруженный файл), потом по картинке.
+	pub fn record_worn(
+		&self,
+		bytes: &[u8],
+		model: SkinModel,
+		account_id: &str,
+		key: &str,
+	) -> Result<Recorded, AppError> {
+		let Ok(skin) = png::parse(bytes) else {
+			return Ok(Recorded::default());
+		};
+		let path = self.png_path(&skin.id)?;
+		let now = now_iso();
+		let mut slot = self.lock();
+		let file = self.loaded(&mut slot)?;
+		let by_key = file
+			.keys
+			.get(key)
+			.filter(|id| file.find(id).is_some())
+			.cloned();
+		let id = by_key.clone().unwrap_or_else(|| skin.id.clone());
+		if by_key.is_none() && file.dismissed.contains(&id) {
+			return Ok(Recorded::default());
+		}
+		let mut next = file.clone();
+		let mut written = false;
+		let mut recorded = Recorded::default();
+		match next.skins.iter_mut().find(|stored| stored.id == id) {
+			Some(stored) => {
+				recorded.changed = stored.note_seen(account_id, &now);
+				// Файл скина пропал, а картинка та же — возвращаем.
+				if by_key.is_none() && !path.exists() {
+					fs_util::write_atomic(&path, &skin.png).map_err(|err| storage(&path, err))?;
+					written = true;
+					recorded.changed = true;
+				}
+			}
+			None => {
+				if !path.exists() {
+					fs_util::write_atomic(&path, &skin.png).map_err(|err| storage(&path, err))?;
+					written = true;
+				}
+				let mut stored = StoredSkin {
+					id: id.clone(),
+					name: String::new(),
+					model,
+					legacy: skin.legacy,
+					added_at: now.clone(),
+					origin: SkinOrigin::Account,
+					seen: Vec::new(),
+				};
+				stored.note_seen(account_id, &now);
+				recorded.added = Some(entry(&stored, data_url(&skin.png)));
+				recorded.changed = true;
+				next.skins.insert(0, stored);
+			}
+		}
+		if safe_key(key) {
+			next.keys.insert(key.to_owned(), id);
+		}
+		if let Err(err) = self.save(&next) {
+			if written && recorded.added.is_some() {
+				let _ = std::fs::remove_file(&path);
+			}
+			return Err(err);
+		}
+		*file = next;
+		Ok(recorded)
 	}
 
 	pub fn add_files(&self, paths: &[String]) -> Result<SkinsAdded, AppError> {
@@ -448,6 +586,8 @@ impl Library {
 					}
 				}
 				let texture = data_url(&skin.png);
+				// Пользователь сам вернул скин: снова может попадать в историю.
+				next.dismissed.remove(&skin.id);
 				match existing {
 					Some(stored) => duplicates.push(entry(&stored, texture)),
 					None => {
@@ -457,13 +597,15 @@ impl Library {
 							model: skin.model,
 							legacy: skin.legacy,
 							added_at: now_iso(),
+							origin: SkinOrigin::Upload,
+							seen: Vec::new(),
 						};
 						added.push(entry(&stored, texture));
 						next.skins.insert(0, stored);
 					}
 				}
 			}
-			if added.is_empty() {
+			if added.is_empty() && next.dismissed == file.dismissed {
 				Ok(())
 			} else {
 				self.save(&next)
@@ -509,14 +651,13 @@ impl Library {
 	}
 
 	/// Файл — в корзину без замка (это долго), потом запись. Не записалось — скин без файла просто скрыт.
+	/// Скин, который был на аккаунте, запоминается в `dismissed`: иначе надетый вернётся сам.
 	pub fn remove(
 		&self,
 		id: &str,
 		delete: impl FnOnce(&Path) -> io::Result<()>,
 	) -> Result<(), AppError> {
-		if self.snapshot()?.find(id).is_none() {
-			return Err(not_found());
-		}
+		let dismiss = self.snapshot()?.find(id).ok_or_else(not_found)?.was_worn();
 		let path = self.png_path(id)?;
 		match delete(&path) {
 			Ok(()) => {}
@@ -526,6 +667,9 @@ impl Library {
 		self.update(|file| {
 			file.skins.retain(|skin| skin.id != id);
 			file.keys.retain(|_, skin_id| skin_id != id);
+			if dismiss {
+				file.dismissed.insert(id.to_owned());
+			}
 			Ok(())
 		})
 	}
@@ -712,6 +856,7 @@ mod tests {
 		);
 	}
 
+	#[cfg(windows)]
 	#[test]
 	fn remove_busy_file_keeps_skin() {
 		let f = fixture();
@@ -749,7 +894,7 @@ mod tests {
 		assert_eq!(f.lib.skin_id_for("key-none", None), None);
 
 		let saved: Value = serde_json::from_slice(&std::fs::read(f.index()).unwrap()).unwrap();
-		assert_eq!(saved["version"], 2);
+		assert_eq!(saved["version"], 3);
 		assert_eq!(saved["keys"].as_object().unwrap().len(), 1);
 
 		let mut deleted = Vec::new();
@@ -774,9 +919,9 @@ mod tests {
 	fn add_bytes_is_idempotent() {
 		let f = fixture();
 		let png = skin(64, 64, 8);
-		let first = f.lib.add_bytes(&png, "Steve", Some("k")).unwrap();
+		let first = f.lib.add_bytes(&png, "Steve", Some("k"), "acc").unwrap();
 		assert_eq!(first.name, "Steve");
-		let again = f.lib.add_bytes(&png, "Другой", Some("k2")).unwrap();
+		let again = f.lib.add_bytes(&png, "Другой", Some("k2"), "acc").unwrap();
 		assert_eq!(again.id, first.id);
 		assert_eq!(again.name, "Steve");
 		assert_eq!(f.lib.skins().unwrap().len(), 1);
@@ -784,11 +929,14 @@ mod tests {
 		assert_eq!(f.lib.model_of(&first.id).unwrap(), SkinModel::Classic);
 		// Не картинка скина.
 		assert_eq!(
-			f.lib.add_bytes(b"x", "a", None).unwrap_err().code,
+			f.lib.add_bytes(b"x", "a", None, "acc").unwrap_err().code,
 			ErrorCode::SkinNotFound
 		);
 		// Плохое имя не мешает.
-		let other = f.lib.add_bytes(&skin(64, 64, 9), "  ", None).unwrap();
+		let other = f
+			.lib
+			.add_bytes(&skin(64, 64, 9), "  ", None, "acc")
+			.unwrap();
 		assert_eq!(other.name, "skin");
 	}
 
@@ -868,7 +1016,7 @@ mod tests {
 			model: None,
 		};
 		f.lib.update_skin(&id, patch).unwrap();
-		assert_eq!(saved()["version"], 2);
+		assert_eq!(saved()["version"], 3);
 		assert!(saved().get("worn").is_none());
 		assert!(saved()["keys"].as_object().unwrap().is_empty());
 		assert_eq!(saved()["skins"][0]["name"], "Маг");
@@ -1016,7 +1164,7 @@ mod tests {
 
 		// Мусор убран с диска сразу, копия — рядом.
 		let saved: Value = serde_json::from_slice(&std::fs::read(f.index()).unwrap()).unwrap();
-		assert_eq!(saved["version"], 2);
+		assert_eq!(saved["version"], 3);
 		assert_eq!(saved["skins"].as_array().unwrap().len(), 1);
 		assert!(saved.to_string().find("evil").is_none());
 		assert!(saved["skins"][0].get("texture").is_none());
@@ -1078,7 +1226,7 @@ mod tests {
 		assert_eq!(skins[0].id, id);
 		// Индекс снова целый, и новой копии при следующем чтении не будет.
 		let saved: Value = serde_json::from_slice(&std::fs::read(f.index()).unwrap()).unwrap();
-		assert_eq!(saved["version"], 2);
+		assert_eq!(saved["version"], 3);
 		let reloaded = Library::new(f.dir.path().join("skins"));
 		assert_eq!(reloaded.skins().unwrap().len(), 1);
 		let backups = std::fs::read_dir(&f.lib.dir)
@@ -1125,5 +1273,126 @@ mod tests {
 			.collect();
 		assert_eq!(backups.len(), 1);
 		assert_eq!(std::fs::read(backups[0].path()).unwrap(), b"{ broken");
+	}
+
+	/// Файл версии 2: записи — загруженные, без истории; после записи — версия 3.
+	#[test]
+	fn version_2_becomes_uploads() {
+		let f = fixture();
+		let id = place(&f, 1);
+		let json = serde_json::json!({
+			"version": 2,
+			"skins": [{ "id": id, "name": "Рыцарь", "model": "slim", "legacy": false, "addedAt": "t" }],
+			"keys": { "k": id },
+		});
+		std::fs::write(f.index(), serde_json::to_vec(&json).unwrap()).unwrap();
+		let skins = f.lib.skins().unwrap();
+		assert_eq!(skins[0].origin, SkinOrigin::Upload);
+		assert!(skins[0].seen.is_empty());
+
+		f.lib
+			.record_worn(&skin(64, 64, 1), SkinModel::Classic, "acc", "k")
+			.unwrap();
+		let saved: Value = serde_json::from_slice(&std::fs::read(f.index()).unwrap()).unwrap();
+		assert_eq!(saved["version"], 3);
+		assert_eq!(saved["skins"][0]["origin"], "upload");
+		assert_eq!(saved["skins"][0]["seen"][0]["accountId"], "acc");
+		assert!(saved["dismissed"].as_array().unwrap().is_empty());
+		// Руки записи не меняются от профиля.
+		assert_eq!(f.lib.skins().unwrap()[0].model, SkinModel::Slim);
+	}
+
+	#[test]
+	fn worn_skin_joins_history_once() {
+		let f = fixture();
+		let png = skin(64, 64, 4);
+		let first = f
+			.lib
+			.record_worn(&png, SkinModel::Slim, "acc", "k1")
+			.unwrap();
+		let added = first.added.unwrap();
+		assert!(first.changed);
+		assert_eq!(added.origin, SkinOrigin::Account);
+		assert_eq!(added.name, "");
+		assert_eq!(added.model, SkinModel::Slim);
+		assert!(f.lib.png_path(&added.id).unwrap().is_file());
+		assert_eq!(f.lib.skin_id_for("k1", None), Some(added.id.clone()));
+
+		let again = f
+			.lib
+			.record_worn(&png, SkinModel::Slim, "acc", "k1")
+			.unwrap();
+		assert!(again.added.is_none() && !again.changed);
+		let other = f.lib.record_worn(&png, SkinModel::Slim, "b", "k1").unwrap();
+		assert!(other.added.is_none() && other.changed);
+		let skins = f.lib.skins().unwrap();
+		assert_eq!(skins.len(), 1);
+		assert_eq!(skins[0].seen.len(), 2);
+
+		// Не картинка скина — ничего.
+		let junk = f
+			.lib
+			.record_worn(b"x", SkinModel::Slim, "acc", "k2")
+			.unwrap();
+		assert!(junk.added.is_none() && !junk.changed);
+		// Переживает перезапуск.
+		let reloaded = Library::new(f.dir.path().join("skins"));
+		assert_eq!(reloaded.skins().unwrap()[0].seen.len(), 2);
+	}
+
+	#[test]
+	fn dismissed_until_user_adds_it_again() {
+		let f = fixture();
+		let png = skin(64, 64, 4);
+		let id = f
+			.lib
+			.record_worn(&png, SkinModel::Classic, "acc", "k")
+			.unwrap()
+			.added
+			.unwrap()
+			.id;
+		f.lib
+			.remove(&id, |path| std::fs::remove_file(path))
+			.unwrap();
+		let back = f
+			.lib
+			.record_worn(&png, SkinModel::Classic, "acc", "k")
+			.unwrap();
+		assert!(back.added.is_none() && !back.changed);
+		assert!(f.lib.skins().unwrap().is_empty());
+		let reloaded = Library::new(f.dir.path().join("skins"));
+		assert!(
+			reloaded
+				.record_worn(&png, SkinModel::Classic, "acc", "k")
+				.unwrap()
+				.added
+				.is_none()
+		);
+
+		// Файлом — снова обычный скин, и история снова пишется.
+		let path = f.file("me.png", &png);
+		assert_eq!(f.lib.add_files(&[path]).unwrap().added.len(), 1);
+		let seen = f
+			.lib
+			.record_worn(&png, SkinModel::Classic, "acc", "k")
+			.unwrap();
+		assert!(seen.added.is_none() && seen.changed);
+		let skins = f.lib.skins().unwrap();
+		assert_eq!(skins[0].origin, SkinOrigin::Upload);
+		assert_eq!(skins[0].seen.len(), 1);
+	}
+
+	#[test]
+	fn removed_upload_dismissed_only_if_worn() {
+		let f = fixture();
+		let plain = f.add("a.png", 1);
+		let worn = f.add("b.png", 2);
+		f.lib
+			.record_worn(&skin(64, 64, 2), SkinModel::Classic, "acc", "k")
+			.unwrap();
+		f.lib.remove(&plain.id, |_| Ok(())).unwrap();
+		f.lib.remove(&worn.id, |_| Ok(())).unwrap();
+		let saved: Value = serde_json::from_slice(&std::fs::read(f.index()).unwrap()).unwrap();
+		assert_eq!(saved["dismissed"], serde_json::json!([worn.id]));
 	}
 }

@@ -41,6 +41,7 @@ export function errorText(error: AppError): string {
 	if (error.code === "source_disabled" && error.details === "denied")
 		return i18n.t("errorDetails.sourceDenied");
 	if (error.code === "invalid_name" && error.details === "skin") return i18n.t("errorDetails.skinName");
+	if (error.code === "java_invalid" && error.details === "rosetta") return i18n.t("errorDetails.rosetta");
 	if (isKnownCode(error.code)) return i18n.t(`errors.${error.code}`);
 	return error.message.trim() || i18n.t("errors.fallback");
 }

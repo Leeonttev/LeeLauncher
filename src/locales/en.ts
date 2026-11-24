@@ -93,6 +93,13 @@ export const en: Translation = {
 	skins: {
 		title: "Skins",
 		search: "Search skins",
+		mine: "My skins",
+		filter: {
+			label: "Show",
+			all: "All · {count}",
+			uploaded: "Uploaded · {count}",
+			history: "History · {count}",
+		},
 		add: "Add file",
 		stage: {
 			worn: "Wearing now",
@@ -116,17 +123,16 @@ export const en: Translation = {
 			label: "Cape",
 			none: "No cape",
 		},
-		current: {
-			notSaved: "Not in library",
-			save: "Save",
-			takeOff: "Remove…",
-		},
 		model: {
 			label: "Arms",
 			classic: "Wide",
 			slim: "Slim",
 		},
 		card: {
+			wasWorn: "Worn on account · {date}",
+			wasWornPlain: "Worn on account",
+			onAccount: "On your account now",
+			historyName: "Skin from {date}",
 			classic: "Wide arms",
 			slim: "Slim arms",
 			legacy: "old format",
@@ -144,11 +150,15 @@ export const en: Translation = {
 			relogin: "Sign in again",
 		},
 		hint: {
+			wornInGame: "It will update in game when you rejoin a world",
 			loading: "Please wait: loading the skin",
 			pickFirst: "Choose a skin first",
 			alreadyWorn: "This skin is already applied",
 		},
 		menu: {
+			tryOn: "Try on",
+			wear: "Apply",
+			removeHistory: "Remove from history…",
 			rename: "Rename",
 			showFile: "Show file",
 			remove: "Delete…",
@@ -161,8 +171,11 @@ export const en: Translation = {
 		},
 		empty: {
 			title: "No skins yet",
-			text: "Drag a skin PNG here or choose one from your computer",
+			text: "Drop a skin PNG here or pick one on your computer",
 			pick: "Choose file",
+			uploadedTitle: "You haven't added any skins yet",
+			historyTitle: "History is empty",
+			historyText: "The launcher saves skins your account has worn here",
 		},
 		locked: {
 			title: "Microsoft account required",
@@ -203,9 +216,14 @@ export const en: Translation = {
 			label: "Name",
 		},
 		remove: {
-			textWorn: "The file will go to the Recycle Bin. The skin stays on your account",
+			textWorn: "The file will go to the Trash. The skin stays on your account",
 			title: 'Delete skin "{name}"?',
-			text: "The file will go to the Recycle Bin",
+			text: "The file will go to the Trash",
+		},
+		removeHistory: {
+			title: "Remove skin from history?",
+			text: "The launcher won't show it again, even if it's back on your account",
+			confirm: "Remove",
 		},
 		replace: {
 			title: "Replace your current skin?",
@@ -213,7 +231,6 @@ export const en: Translation = {
 			confirm: "Replace",
 		},
 		takeOff: {
-			textUnsaved: "This skin isn't in your library and will be lost when removed. Save it first",
 			title: "Remove the skin from your account?",
 			text: "Your account will get a regular Minecraft skin. This one stays in the library",
 			confirm: "Remove skin",
@@ -243,7 +260,8 @@ export const en: Translation = {
 				description: "The launcher downloads the right Java for each game version",
 				rescan: "Scan again",
 				scanning: "Scanning…",
-				for21: "for 1.20.5 and newer",
+				for25: "for 26.1 and newer",
+				for21: "for 1.20.5–1.21.11",
 				for17: "for 1.17–1.20.4",
 				for8: "for 1.16.5 and older",
 				auto: "Automatic",
@@ -265,6 +283,11 @@ export const en: Translation = {
 				title: "Java4Shell protection",
 				description:
 					"For Java 17 and newer, adds arguments that turn off the vulnerable part (CVE-2026-114938). Turn it off only if you know your Java is already patched",
+			},
+			protectPacks: {
+				title: "Server resource pack protection",
+				description:
+					"For versions with the vulnerability, the launcher turns off automatic acceptance of server resource packs before launch, so the game will ask you first. On servers that require a pack, you can still accept it manually",
 			},
 			dataFolder: {
 				title: "Data folder",
@@ -304,7 +327,7 @@ export const en: Translation = {
 		reduceMotion: {
 			title: "Reduce motion",
 			description:
-				"Turns off movement in the interface. Until you change it, the launcher follows your Windows setting.",
+				"Turns off movement in the interface. Until you change it, the launcher follows your system setting.",
 		},
 		about: {
 			title: "About",
@@ -412,11 +435,10 @@ export const en: Translation = {
 		title: "Instances",
 		description: "Your game versions with mod loaders and mods",
 		create: "Create instance",
-		createShortcut: "Create instance (Ctrl+N)",
+		createShortcut: "Create instance ({keys})",
 		import: {
 			label: "Import",
 			file: "Modpack file (.mrpack, .zip)…",
-			shortcut: "Ctrl+O",
 		},
 		search: {
 			placeholder: "Search instances",
@@ -602,7 +624,6 @@ export const en: Translation = {
 		buttonBusy: "Downloads · in progress",
 		buttonNew: "Downloads · new results",
 		buttonFailed: "Downloads · something failed",
-		shortcut: "Ctrl+J",
 		clear: "Clear list",
 		section: {
 			active: "In progress",
@@ -777,6 +798,26 @@ export const en: Translation = {
 			title: "LeeLauncher kept running in the tray",
 			description:
 				"While a game is running, closing the window hides it to the tray. Click the tray icon to open the launcher again",
+			titleMac: "LeeLauncher kept running in the menu bar",
+			descriptionMac:
+				"While a game is running, closing the window hides it. Click the menu bar icon to open the launcher again",
+		},
+	},
+	security: {
+		fontVuln: {
+			badge: "Vulnerable Minecraft version — see the instance page for details",
+			title: "This Minecraft version has a known vulnerability",
+			description:
+				"A malicious resource pack can harm your computer. Don't accept resource packs from servers you don't know, and don't install resource packs from untrusted sources",
+			descriptionProtected:
+				"A malicious resource pack can harm your computer. Don't accept resource packs from servers you don't know, and don't install resource packs from untrusted sources. The launcher turns off automatic acceptance of server resource packs for you",
+			dismiss: "Hide warning",
+		},
+		serverPacks: {
+			toast_one:
+				"Automatic resource pack acceptance turned off on {count} server — the game will ask you first",
+			toast_other:
+				"Automatic resource pack acceptance turned off on {count} servers — the game will ask you first",
 		},
 	},
 	migration: {
@@ -995,7 +1036,7 @@ export const en: Translation = {
 		},
 		removeDialog: {
 			title: "Remove {title} from {name}?",
-			description: "The file will be moved to the Recycle Bin",
+			description: "The file will be moved to the Trash",
 		},
 		where: {
 			title: "Where to install {title}?",
@@ -1327,7 +1368,7 @@ export const en: Translation = {
 		},
 		remove: {
 			title: "Remove {name}?",
-			description: "The file will be moved to the Recycle Bin",
+			description: "The file will be moved to the Trash",
 		},
 		gameRunning: "Close the game to change installed content",
 		offline: "Offline: updates not checked",
@@ -1379,7 +1420,7 @@ export const en: Translation = {
 		menuLabel: "Actions for world “{name}”",
 		remove: {
 			title: "Delete world “{name}”?",
-			description: "The world will be moved to the Recycle Bin",
+			description: "The world will be moved to the Trash",
 		},
 		empty: {
 			title: "No worlds yet",
@@ -1395,7 +1436,7 @@ export const en: Translation = {
 		open: "Open screenshot · {date}",
 		remove: {
 			title: "Delete screenshot?",
-			description: "The file will be moved to the Recycle Bin",
+			description: "The file will be moved to the Trash",
 		},
 		empty: {
 			title: "No screenshots",
@@ -1613,6 +1654,8 @@ export const en: Translation = {
 	},
 	errorDetails: {
 		skinName: "A skin name must be 1 to 48 characters, with no control characters",
+		rosetta:
+			"This Minecraft version needs Rosetta. To install it, open Terminal and run softwareupdate --install-rosetta",
 		needsLoader: "Needs a mod loader: this can't be installed into an instance without mods",
 		sourceDenied:
 			"The catalog isn't accepting requests from the launcher. Update LeeLauncher or try again later",

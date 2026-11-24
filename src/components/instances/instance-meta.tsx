@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { Instance } from "@/lib/api";
 import { GameAccount } from "@/components/instances/game-account";
+import { VulnBadge } from "@/components/instances/vuln-badge";
 import { playedText, useSessionSeconds, useShownGameAccount } from "@/components/instances/instance-text";
 import { formatDuration } from "@/lib/format";
 import { progressValue, stageShortText, stageText, statusOf, useInstances } from "@/lib/instances";
@@ -121,7 +122,12 @@ export function InstanceMeta({
 					transition={{ duration: 0.12 }}
 					className="flex min-w-0 items-center"
 				>
-					{version && <span className="shrink-0">{version}</span>}
+					{version && (
+						<span className="flex shrink-0 items-center gap-1">
+							{version}
+							<VulnBadge instance={instance} onCover={banner} />
+						</span>
+					)}
 					{version && state !== null && (
 						<span aria-hidden className="shrink-0 whitespace-pre">
 							{" · "}

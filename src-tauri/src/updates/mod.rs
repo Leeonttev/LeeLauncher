@@ -108,14 +108,24 @@ fn install_error(err: tauri_plugin_updater::Error) -> AppError {
 		| E::SignedVersionMismatch { .. }
 		| E::MissingSignedVersion => ErrorCode::UpdateBadSignature,
 		E::Reqwest(_) | E::Network(_) => ErrorCode::UpdateUnavailable,
+		E::Io(io) if disk_full(io) => ErrorCode::NotEnoughSpace,
 		_ => ErrorCode::UpdateFailed,
 	};
 	AppError::coded(code, err.to_string())
 }
 
+/// Диск полон: `ERROR_HANDLE_DISK_FULL`, `ERROR_DISK_FULL` на Windows, `ENOSPC`, `EDQUOT` на Unix.
+fn disk_full(err: &std::io::Error) -> bool {
+	if cfg!(windows) {
+		matches!(err.raw_os_error(), Some(39 | 112))
+	} else {
+		err.kind() == std::io::ErrorKind::StorageFull
+			|| err.kind() == std::io::ErrorKind::QuotaExceeded
+	}
+}
+
 fn io_error(err: std::io::Error) -> AppError {
-	// ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL.
-	if matches!(err.raw_os_error(), Some(39 | 112)) {
+	if disk_full(&err) {
 		return AppError::coded(ErrorCode::NotEnoughSpace, err.to_string());
 	}
 	AppError::storage(err.to_string())
@@ -125,7 +135,7 @@ pub fn info(update: &Update, downloaded: bool) -> UpdateInfo {
 	let mut info = info_from(
 		&update.version,
 		&update.current_version,
-		&update.target,
+		&platform(),
 		update.body.as_deref(),
 		&update.raw_json,
 	);
@@ -136,7 +146,7 @@ pub fn info(update: &Update, downloaded: bool) -> UpdateInfo {
 fn info_from(
 	version: &str,
 	current: &str,
-	target: &str,
+	platform: &str,
 	body: Option<&str>,
 	raw: &serde_json::Value,
 ) -> UpdateInfo {
@@ -153,12 +163,48 @@ fn info_from(
 		notes: text(raw.get("notes").and_then(|v| v.as_str())).or_else(|| text(body)),
 		size: raw
 			.get("platforms")
-			.and_then(|p| p.get(target).or_else(|| p.get("windows-x86_64")))
+			.and_then(|p| {
+				p.get(format!("{platform}-{BUNDLE}"))
+					.or_else(|| p.get(platform))
+			})
 			.and_then(|p| p.get("size"))
 			.and_then(|s| s.as_u64()),
 		downloaded: false,
 	}
 }
+
+/// Ключ платформы в `latest.json`, как его ищет плагин: `<ос>-<архитектура>`.
+fn platform() -> String {
+	let os = if cfg!(target_os = "macos") {
+		"darwin"
+	} else if cfg!(windows) {
+		"windows"
+	} else {
+		"linux"
+	};
+	let arch = match std::env::consts::ARCH {
+		"x86" => "i686",
+		"arm" => "armv7",
+		arch => arch,
+	};
+	format!("{os}-{arch}")
+}
+
+/// Тип пакета: плагин сначала ищет `<платформа>-<тип>`.
+const BUNDLE: &str = if cfg!(target_os = "macos") {
+	"app"
+} else if cfg!(windows) {
+	"nsis"
+} else {
+	"appimage"
+};
+
+/// Расширение пакета: установщик на Windows, архив `.app` на macOS.
+const PACKAGE_EXT: &str = if cfg!(target_os = "macos") {
+	"app.tar.gz"
+} else {
+	"exe"
+};
 
 /// Имя файла пакета. Версия из `latest.json` — чужие данные: только безопасные символы.
 fn package_name(version: &str) -> Option<String> {
@@ -168,14 +214,14 @@ fn package_name(version: &str) -> Option<String> {
 			.chars()
 			.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
 		&& !version.contains("..");
-	safe.then(|| format!("update-{version}.exe"))
+	safe.then(|| format!("update-{version}.{PACKAGE_EXT}"))
 }
 
-/// Версия по имени файла пакета (`update-<версия>.exe` или `.exe.part`).
+/// Версия по имени файла пакета (`update-<версия>.<расширение>` или с `.part`).
 fn package_version(name: &str) -> Option<&str> {
 	let rest = name.strip_prefix("update-")?;
-	rest.strip_suffix(".exe.part")
-		.or_else(|| rest.strip_suffix(".exe"))
+	let rest = rest.strip_suffix(".part").unwrap_or(rest);
+	rest.strip_suffix(PACKAGE_EXT)?.strip_suffix('.')
 }
 
 /// Убирает пакеты версий не новее текущей: обновление поставлено или устарело.
@@ -438,7 +484,8 @@ pub async fn app_update_install<R: Runtime>(
 			},
 		);
 		log::info!("устанавливаем обновление {}", update.version);
-		// На Windows `install` запускает установщик NSIS (`/P /UPDATE /R`) и завершает процесс.
+		// Windows: `install` запускает установщик (`/P /UPDATE /R`) и завершает процесс.
+		// macOS: подменяет `.app` на месте и возвращается, перезапуск — `app_restart`.
 		update.install(&bytes).map_err(|err| {
 			log::error!("обновление не установилось: {err}");
 			install_error(err)
@@ -462,7 +509,7 @@ pub fn app_last_update(state: State<'_, Updates>) -> Option<LastUpdate> {
 	state.last.clone()
 }
 
-/// Перезапуск. На Windows новую версию запускает сам установщик.
+/// Перезапуск после установки на macOS. На Windows новую версию запускает сам установщик.
 #[tauri::command]
 pub fn app_restart<R: Runtime>(app: AppHandle<R>) {
 	save_window_state(&app);
@@ -519,9 +566,19 @@ mod tests {
 			install_error(E::BinaryNotFoundInArchive).code,
 			ErrorCode::UpdateFailed
 		);
+		// ERROR_DISK_FULL / ENOSPC.
+		let full = if cfg!(windows) { 112 } else { 28 };
 		assert_eq!(
-			io_error(std::io::Error::from_raw_os_error(112)).code,
+			io_error(std::io::Error::from_raw_os_error(full)).code,
 			ErrorCode::NotEnoughSpace
+		);
+		assert_eq!(
+			install_error(E::Io(std::io::Error::from_raw_os_error(full))).code,
+			ErrorCode::NotEnoughSpace
+		);
+		assert_eq!(
+			io_error(std::io::Error::from_raw_os_error(13)).code,
+			ErrorCode::Storage
 		);
 	}
 
@@ -546,27 +603,59 @@ mod tests {
 
 	#[test]
 	fn package_names() {
-		assert_eq!(package_name("0.2.0").as_deref(), Some("update-0.2.0.exe"));
+		let ext = PACKAGE_EXT;
+		assert_eq!(package_name("0.2.0"), Some(format!("update-0.2.0.{ext}")));
 		assert_eq!(
-			package_name("1.0.0-beta.1+b2").as_deref(),
-			Some("update-1.0.0-beta.1+b2.exe")
+			package_name("1.0.0-beta.1+b2"),
+			Some(format!("update-1.0.0-beta.1+b2.{ext}"))
 		);
 		assert_eq!(package_name("../x"), None);
 		assert_eq!(package_name("a\\b"), None);
 		assert_eq!(package_name(""), None);
-		assert_eq!(package_version("update-0.2.0.exe"), Some("0.2.0"));
-		assert_eq!(package_version("update-0.2.0.exe.part"), Some("0.2.0"));
-		assert_eq!(package_version("other.exe"), None);
+		let name = format!("update-0.2.0.{ext}");
+		assert_eq!(package_version(&name), Some("0.2.0"));
+		assert_eq!(package_version(&format!("{name}.part")), Some("0.2.0"));
+		assert_eq!(package_version(&format!("other.{ext}")), None);
+		assert_eq!(package_version("update-0.2.0.zip"), None);
+	}
+
+	#[test]
+	fn platform_key() {
+		let key = platform();
+		if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+			assert_eq!(key, "darwin-aarch64");
+		}
+		if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+			assert_eq!(key, "darwin-x86_64");
+		}
+		if cfg!(all(windows, target_arch = "x86_64")) {
+			assert_eq!(key, "windows-x86_64");
+		}
+		let raw = serde_json::json!({
+			"version": "0.2.0",
+			"platforms": {
+				"darwin-aarch64": { "size": 1 },
+				"darwin-aarch64-app": { "size": 2 },
+				"windows-x86_64": { "size": 3 }
+			}
+		});
+		let size = |key: &str| info_from("0.2.0", "0.1.0", key, None, &raw).size;
+		assert_eq!(size("windows-x86_64"), Some(3));
+		assert_eq!(size("darwin-x86_64"), None);
+		if cfg!(target_os = "macos") {
+			assert_eq!(size("darwin-aarch64"), Some(2));
+		}
 	}
 
 	#[test]
 	fn cleanup_keeps_newer_packages() {
 		let dir = tempfile::tempdir().unwrap();
+		let ext = PACKAGE_EXT;
 		for name in [
-			"update-0.1.0.exe",
-			"update-0.2.0.exe.part",
-			"update-0.3.0.exe",
-			"junk.txt",
+			format!("update-0.1.0.{ext}"),
+			format!("update-0.2.0.{ext}.part"),
+			format!("update-0.3.0.{ext}"),
+			"junk.txt".to_owned(),
 		] {
 			std::fs::write(dir.path().join(name), b"x").unwrap();
 		}
@@ -576,7 +665,7 @@ mod tests {
 			.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
 			.collect();
 		left.sort();
-		assert_eq!(left, ["update-0.3.0.exe"]);
+		assert_eq!(left, [format!("update-0.3.0.{ext}")]);
 	}
 
 	#[test]

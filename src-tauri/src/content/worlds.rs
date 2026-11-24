@@ -250,6 +250,19 @@ mod tests {
 		assert!(saves.join("My Map/region/r.0.0.mca").is_file());
 		assert!(saves.join("My Map/DIM1/level.dat").is_file());
 		assert!(!saves.join("My Map/readme.txt").exists());
+		let windows = dir.path().join("win.zip");
+		zip_with(
+			&windows,
+			&[
+				("Win Map\\level.dat", b"nbt"),
+				("Win Map\\region\\r.0.0.mca", b"r"),
+			],
+		);
+		assert_eq!(
+			install(&saves, &windows, "Title", Limits::DEFAULT).unwrap(),
+			"Win Map"
+		);
+		assert!(saves.join("Win Map/region/r.0.0.mca").is_file());
 		// Второй раз — копия рядом.
 		assert_eq!(
 			install(&saves, &archive, "Title", Limits::DEFAULT).unwrap(),

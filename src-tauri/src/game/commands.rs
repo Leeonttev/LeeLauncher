@@ -39,6 +39,10 @@ impl GameEvents for TauriGameEvents {
 	fn changed(&self, instances: Vec<Instance>) {
 		emit(&self.0, EVENT_CHANGED, instances);
 	}
+
+	fn server_packs_guarded(&self, guarded: super::server_packs::Guarded) {
+		emit(&self.0, super::server_packs::EVENT, guarded);
+	}
 }
 
 #[tauri::command]

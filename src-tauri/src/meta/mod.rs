@@ -200,7 +200,7 @@ impl Meta {
 		Ok(self.version_manifest_fetched(force, cancel).await?.value)
 	}
 
-	async fn version_manifest_fetched(
+	pub(crate) async fn version_manifest_fetched(
 		&self,
 		force: bool,
 		cancel: &CancellationToken,
@@ -299,6 +299,35 @@ impl Meta {
 		fs_util::write_atomic(&path, &bytes)
 			.map_err(|e| AppError::storage(format!("{}: {e}", path.display())))?;
 		Ok(info)
+	}
+
+	/// Перекачивает описание версии, если на диске его нет или sha1 разошёлся с манифестом.
+	/// `true` — файл заменён.
+	pub async fn refresh_version_info(
+		&self,
+		entry: &ManifestVersion,
+		cancel: &CancellationToken,
+	) -> Result<bool, AppError> {
+		let Some(sha1) = entry.sha1.as_deref() else {
+			return Ok(false);
+		};
+		let path = self.layout.version_json(&entry.id);
+		if let Ok(bytes) = tokio::fs::read(&path).await
+			&& crate::download::hex_sha1(&bytes) == sha1
+		{
+			return Ok(false);
+		}
+		let bytes = self
+			.dl
+			.bytes(&entry.url, Some(sha1), cancel)
+			.await
+			.map_err(fetch_error)?;
+		let info: VersionInfo =
+			serde_json::from_slice(&bytes).map_err(|e| bad_meta(&entry.url, e))?;
+		check_version_info(&info)?;
+		fs_util::write_atomic(&path, &bytes)
+			.map_err(|e| AppError::storage(format!("{}: {e}", path.display())))?;
+		Ok(true)
 	}
 
 	pub async fn loader_manifest(

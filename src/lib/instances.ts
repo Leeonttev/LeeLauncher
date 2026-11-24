@@ -26,7 +26,7 @@ import type { InstanceCover } from "@/lib/covers";
 import { getDownloads } from "@/lib/downloads";
 import { errorText, toAppError, type AppError } from "@/lib/errors";
 import { formatDuration } from "@/lib/format";
-import { openAppFolder } from "@/lib/game-settings";
+import { JAVA_MAJORS, openAppFolder, SETTINGS_JAVA_ROWS_ID, settingsJavaFieldId } from "@/lib/game-settings";
 import {
 	beginGroupRename,
 	findGroup,
@@ -37,7 +37,8 @@ import {
 	normalizeGroupName,
 } from "@/lib/groups";
 import { i18n } from "@/lib/i18n";
-import { LOADER_NAMES, javaMajorFor } from "@/lib/loaders";
+import { setInstanceTab } from "@/lib/instance-page";
+import { LOADER_NAMES, instanceJavaMajor, javaMajorFor } from "@/lib/loaders";
 import { getRoute, instancePath, navigate } from "@/lib/router";
 import { readStorage, writeStorage } from "@/lib/storage";
 import { invalidateGameVersions, revalidateVersions } from "@/lib/versions";
@@ -522,15 +523,59 @@ function launchToastAction(error: AppError, id: string) {
 
 export const INSTANCE_JAVA_FIELD_ID = "instance-java";
 
+let javaFocusSeq = 0;
+
+/** Ведёт туда, где Java этой сборки можно поменять: своя Java — настройки сборки, общая — Настройки → «Игра». */
 export function focusJavaSetting(id: string) {
-	navigate(instancePath(id));
+	const instance = state.instances.find((item) => item.id === id);
+	const major = instance ? instanceJavaMajor(instance) : null;
+	const globalMajor =
+		instance && !instance.javaPath ? JAVA_MAJORS.find((item) => item === major) : undefined;
+	const seq = ++javaFocusSeq;
+
+	if (globalMajor === undefined) {
+		setInstanceTab(id, "settings");
+		const route = instancePath(id);
+		navigate(route);
+		waitForElement(seq, route, () => {
+			const field = document.getElementById(INSTANCE_JAVA_FIELD_ID);
+			return field?.closest(`[data-instance-id="${CSS.escape(id)}"]`) ? field : null;
+		});
+		return;
+	}
+
+	navigate("/settings");
+	waitForElement(
+		seq,
+		"/settings",
+		() => document.getElementById(settingsJavaFieldId(globalMajor)),
+		() => document.getElementById(SETTINGS_JAVA_ROWS_ID),
+	);
+}
+
+/** Страница появляется после анимации ухода прежней, а строки Java — после поиска Java: ждём до 10 с. */
+function waitForElement(
+	seq: number,
+	route: string,
+	find: () => HTMLElement | null,
+	placeholder?: () => HTMLElement | null,
+) {
 	let tries = 0;
+	let scrolledToPlaceholder = false;
 	const tick = () => {
-		const field = document.getElementById(INSTANCE_JAVA_FIELD_ID);
+		if (seq !== javaFocusSeq || getRoute() !== route) return;
+		const field = find();
 		if (field) {
 			field.scrollIntoView({ block: "center" });
 			field.focus({ preventScroll: true });
-		} else if (++tries < 20) setTimeout(tick, 50);
+			return;
+		}
+		const near = placeholder?.();
+		if (near && !scrolledToPlaceholder) {
+			near.scrollIntoView({ block: "start" });
+			scrolledToPlaceholder = true;
+		}
+		if (++tries < 200) setTimeout(tick, 50);
 	};
 	setTimeout(tick, 0);
 }

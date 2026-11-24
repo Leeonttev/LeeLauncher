@@ -1,4 +1,7 @@
-//! Шифрование токенов на диске: на Windows DPAPI (`dpapi:<base64>`), на других ОС пока `plain:<base64>`.
+//! Шифрование токенов на диске: на Windows DPAPI (`dpapi:<base64>`), на других ОС `plain:<base64>`.
+//!
+//! Keychain не берём: приложение без подписи Developer ID, и macOS спрашивала бы доступ после
+//! каждого обновления. Вместо этого файл с секретами доступен только владельцу (`fs_util::write_private`).
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
@@ -9,6 +12,7 @@ pub enum SecureError {
 	Format,
 	#[error("base64: {0}")]
 	Base64(#[from] base64::DecodeError),
+	#[cfg_attr(not(windows), allow(dead_code))]
 	#[error("DPAPI: код ошибки {0}")]
 	Os(i32),
 }
@@ -113,7 +117,6 @@ mod imp {
 	}
 }
 
-// TODO: Keychain на macOS и Secret Service на Linux.
 #[cfg(not(windows))]
 mod imp {
 	use super::SecureError;

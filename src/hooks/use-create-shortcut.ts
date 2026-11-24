@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { openCreateInstanceDialog } from "@/lib/instances";
+import { isPrimaryMod } from "@/lib/platform";
 
 function typingTarget(target: EventTarget | null) {
 	if (!(target instanceof HTMLElement)) return false;
@@ -15,8 +16,7 @@ export function useCreateShortcut(enabled: boolean) {
 	useEffect(() => {
 		if (!enabled) return;
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.code !== "KeyN" || !event.ctrlKey || event.altKey || event.shiftKey || event.metaKey)
-				return;
+			if (event.code !== "KeyN" || !isPrimaryMod(event)) return;
 			if (event.repeat || typingTarget(event.target) || overlayOpen()) return;
 			event.preventDefault();
 			openCreateInstanceDialog(document.activeElement as HTMLElement | null);
